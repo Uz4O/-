@@ -37,6 +37,361 @@ button:disabled {
   padding: 22px;
 }
 
+.license-ribbon {
+  align-items: center;
+  background: #19201d;
+  color: #ffffff;
+  display: flex;
+  font-size: 13px;
+  font-weight: 800;
+  gap: 8px;
+  justify-content: center;
+  min-height: 34px;
+  padding: 8px 14px;
+}
+
+.license-ribbon svg {
+  color: #f2bc57;
+  flex: 0 0 auto;
+}
+
+.license-shell {
+  align-items: center;
+  background: #edf1ee;
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 22px;
+}
+
+.license-panel {
+  background: #ffffff;
+  border: 1px solid #d7ded9;
+  border-radius: 8px;
+  box-shadow: 0 18px 42px rgba(26, 40, 32, 0.12);
+  max-width: 420px;
+  padding: 26px;
+  width: 100%;
+}
+
+.license-mark {
+  align-items: center;
+  background: #e8f7f0;
+  border-radius: 8px;
+  color: #1f7a5a;
+  display: inline-flex;
+  height: 54px;
+  justify-content: center;
+  margin-bottom: 16px;
+  width: 54px;
+}
+
+.license-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+.license-form .primary-button {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+.license-error {
+  color: #a14136;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.45;
+  margin: 14px 0 0;
+}
+
+.admin-shell {
+  min-height: 100vh;
+  padding: 22px;
+}
+
+.admin-topbar {
+  margin-bottom: 16px;
+}
+
+.admin-link {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #d7ded9;
+  border-radius: 8px;
+  color: #2d3932;
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 900;
+  min-height: 38px;
+  padding: 0 14px;
+  text-decoration: none;
+}
+
+.admin-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(320px, 0.85fr) minmax(320px, 1fr);
+  margin: 0 auto 16px;
+  max-width: 1180px;
+}
+
+.admin-form {
+  display: grid;
+  gap: 14px;
+}
+
+.admin-form .panel-heading,
+.generated-panel h2 {
+  margin-bottom: 0;
+}
+
+.admin-status {
+  color: #17684c;
+  font-size: 13px;
+  font-weight: 900;
+  margin: 0;
+}
+
+.generated-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.generated-list {
+  display: grid;
+  gap: 8px;
+}
+
+.generated-list span {
+  align-items: center;
+  background: #f5f8f6;
+  border: 1px solid #d7ded9;
+  border-radius: 8px;
+  color: #244b34;
+  display: flex;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 12px;
+  text-align: left;
+}
+
+.generated-list span {
+  color: #66746b;
+  font-size: 13px;
+}
+
+.generated-code-row {
+  align-items: center;
+  background: #f5f8f6;
+  border: 1px solid #d7ded9;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 44px;
+  padding: 6px 8px 6px 12px;
+}
+
+.generated-code-row code {
+  color: #244b34;
+  font-family: Consolas, "SFMono-Regular", monospace;
+  font-size: 14px;
+  font-weight: 900;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.generated-code-row button {
+  align-items: center;
+  background: #1f7a5a;
+  border: 0;
+  border-radius: 8px;
+  color: #ffffff;
+  display: inline-flex;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 900;
+  min-height: 34px;
+  padding: 0 12px;
+}
+
+.generated-code-row button:hover {
+  background: #17684c;
+}
+
+.card-admin-grid {
+  align-items: start;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  margin: 0 auto;
+  max-width: 1180px;
+}
+
+.card-list-panel {
+  min-width: 0;
+}
+
+.card-detail-panel {
+  position: sticky;
+  top: 18px;
+}
+
+.card-table {
+  display: grid;
+  gap: 9px;
+}
+
+.card-row {
+  align-items: center;
+  border: 1px solid #dce3de;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  padding: 12px;
+}
+
+.card-row:hover {
+  background: #f8faf8;
+  border-color: #b9c8bf;
+}
+
+.card-row.is-selected {
+  background: #e8f7f0;
+  border-color: #1f7a5a;
+  box-shadow: inset 3px 0 0 #1f7a5a;
+}
+
+.card-row div:first-child {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.card-row strong,
+.card-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-row span {
+  color: #66746b;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.card-status {
+  background: #eef3f0;
+  border-radius: 999px;
+  color: #607066;
+  font-size: 12px;
+  padding: 6px 10px;
+}
+
+.card-status.is-active {
+  background: #e8f7f0;
+  color: #17684c;
+}
+
+.card-status.is-expired,
+.card-status.is-disabled {
+  background: #fff3ec;
+  color: #bd4c2f;
+}
+
+.card-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.danger-button {
+  color: #bd4c2f;
+}
+
+.danger-button:hover:not(:disabled) {
+  background: #fff3ec;
+  border-color: #e7b69d;
+}
+
+.empty-card-list {
+  align-items: center;
+  background: #f5f8f6;
+  border: 1px dashed #cbd5ce;
+  border-radius: 8px;
+  color: #66746b;
+  display: flex;
+  gap: 8px;
+  min-height: 62px;
+  padding: 14px;
+}
+
+.card-detail-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.card-detail-list div {
+  background: #f5f8f6;
+  border: 1px solid #e0e7e2;
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+}
+
+.card-detail-list dt {
+  color: #66746b;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.card-detail-list dd {
+  color: #19201d;
+  font-size: 13px;
+  font-weight: 800;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.detail-code-line {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.detail-code-line code {
+  font-family: Consolas, "SFMono-Regular", monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-code-line button {
+  align-items: center;
+  background: #1f7a5a;
+  border: 0;
+  border-radius: 8px;
+  color: #ffffff;
+  display: inline-flex;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 900;
+  min-height: 30px;
+  padding: 0 10px;
+}
+
+.detail-code-line button:hover {
+  background: #17684c;
+}
+
 
 .topbar {
   align-items: center;
@@ -960,6 +1315,34 @@ select {
   .workspace,
   .field-grid {
     grid-template-columns: 1fr;
+  }
+
+  .admin-grid,
+  .card-admin-grid,
+  .card-row {
+    grid-template-columns: 1fr;
+  }
+
+  .card-detail-panel {
+    position: static;
+  }
+
+  .admin-shell,
+  .license-shell {
+    padding: 14px;
+  }
+
+  .card-actions {
+    justify-content: flex-start;
+  }
+
+  .generated-code-row {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+  }
+
+  .generated-code-row button {
+    justify-content: center;
   }
 
   .workspace {

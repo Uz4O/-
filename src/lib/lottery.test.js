@@ -90,6 +90,25 @@ describe('parseBetGroups', () => {
     assert.equal(parseBetGroups(result.pingma, 'pingma').reduce((sum, group) => sum + group.betAmount, 0), 3350);
   });
 
+  it('分类时保留 OCR 拆开的平码金额续行', () => {
+    const result = classifyBetText(
+      [
+        '..06..20...40..26.05..29..07..21..32..24.36/15',
+        '0',
+        '澳门彩特码10号12号14号24号26号32号',
+        '10元,4号14号24号34号44号个号各下',
+        '100元,5号15号25号35号45号个号各下',
+        '70元',
+        '香港特码27号下300元',
+      ].join('\n'),
+    );
+
+    assert.match(result.pingma, /\n0(?:\n|$)/);
+    assert.match(result.pingma, /70元/);
+    assert.equal(result.lianma, '');
+    assert.equal(parseBetGroups(result.pingma, 'pingma').reduce((sum, group) => sum + group.betAmount, 0), 2860);
+  });
+
   it('解析 OCR 把 slash 金额拆成下一行数字的平码', () => {
     const groups = parseBetGroups(
       [

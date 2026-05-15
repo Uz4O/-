@@ -828,6 +828,13 @@ function classifyBetText(rawText) {
     const previousPingmaLine = buckets.pingma.split(/\r?\n/).filter(Boolean).at(-1) || '';
     const continuesSlashPingmaLine =
       currentMode === 'pingma' && !comboType && numbers.length >= 2 && /\/\d*$|\.\d$/.test(previousPingmaLine);
+    const continuesSlashAmountLine =
+      currentMode === 'pingma' && !comboType && /^\d{1,2}$/.test(line) && /\/\d{1,2}$/.test(previousPingmaLine);
+    const continuesChineseAmountLine =
+      currentMode === 'pingma' &&
+      !comboType &&
+      /^\d+(?:\.\d+)?元?$/.test(line) &&
+      /(?:各下|各押|各买|各|下|押|买)$/.test(previousPingmaLine);
 
     if (isFushiSlashLine) {
       flushPendingLianma();
@@ -883,7 +890,7 @@ function classifyBetText(rawText) {
       return;
     }
 
-    if (continuesSlashPingmaLine) {
+    if (continuesSlashPingmaLine || continuesSlashAmountLine || continuesChineseAmountLine) {
       flushPendingLianma();
       flushPendingFushiHeader();
       append('pingma', line);

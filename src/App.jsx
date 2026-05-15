@@ -1,10 +1,18 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Ban,
   ClipboardCopy,
+  Info,
   FileImage,
+  KeyRound,
+  Link2Off,
+  Lock,
+  Plus,
+  Trash2,
   RefreshCw,
   RotateCcw,
   ScanText,
+  ShieldCheck,
   UploadCloud,
 } from 'lucide-react';
 import {
@@ -22,6 +30,7 @@ import {
   joinBetText,
   normalizeMarkSixNumber,
 } from './lib/lottery.js';
+import { buildLicenseHeaders, createBrowserId, toGeneratedCodeRows } from './lib/licenseClient.js';
 
 function loadImage(url) {
   return new Promise((resolve, reject) => {
@@ -73,12 +82,19 @@ async function compressImageForRecognition(file, options = {}) {
     const maxSide = options.maxSide || 1200;
     const minWidth = options.minWidth || 0;
     const quality = options.quality || 0.75;
-    const longestSide = Math.max(image.naturalWidth, image.naturalHeight);
+    const crop = options.crop || {};
+    const cropLeft = Math.round(image.naturalWidth * (crop.left || 0));
+    const cropTop = Math.round(image.naturalHeight * (crop.top || 0));
+    const cropRight = Math.round(image.naturalWidth * (crop.right || 0));
+    const cropBottom = Math.round(image.naturalHeight * (crop.bottom || 0));
+    const sourceWidth = Math.max(1, image.naturalWidth - cropLeft - cropRight);
+    const sourceHeight = Math.max(1, image.naturalHeight - cropTop - cropBottom);
+    const longestSide = Math.max(sourceWidth, sourceHeight);
     const sideScale = Math.min(1, maxSide / longestSide);
-    const widthScale = minWidth > 0 && image.naturalWidth < minWidth ? minWidth / image.naturalWidth : 1;
+    const widthScale = minWidth > 0 && sourceWidth < minWidth ? minWidth / sourceWidth : 1;
     const scale = Math.max(sideScale, widthScale);
-    const width = Math.max(1, Math.round(image.naturalWidth * scale));
-    const height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const width = Math.max(1, Math.round(sourceWidth * scale));
+    const height = Math.max(1, Math.round(sourceHeight * scale));
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d');
 
@@ -86,7 +102,7 @@ async function compressImageForRecognition(file, options = {}) {
     canvas.height = height;
     context.fillStyle = '#ffffff';
     context.fillRect(0, 0, width, height);
-    context.drawImage(image, 0, 0, width, height);
+    context.drawImage(image, cropLeft, cropTop, sourceWidth, sourceHeight, 0, 0, width, height);
 
     const blob = await new Promise((resolve) => {
       canvas.toBlob(resolve, 'image/jpeg', quality);
@@ -135,12 +151,16 @@ async function postRecognitionRequest(path, body) {
   const storedToken = window.localStorage.getItem('ocrToken');
   const ocrToken = urlToken || storedToken || '';
   if (urlToken) window.localStorage.setItem('ocrToken', urlToken);
+  const licenseCardId = window.localStorage.getItem(licenseCardIdKey);
+  const licenseBrowserId = window.localStorage.getItem(licenseBrowserIdKey);
+  const licenseHeaders = buildLicenseHeaders(licenseCardId, licenseBrowserId);
 
   const requestOptions = {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       ...(ocrToken ? { 'x-ocr-token': ocrToken } : {}),
+      ...licenseHeaders,
     },
     body: JSON.stringify(body),
   };
@@ -154,7 +174,492 @@ async function postRecognitionRequest(path, body) {
   }
 }
 
-export default function App() {
+const licenseBrowserIdKey = 'markSixLicenseBrowserId';
+const licenseCardIdKey = 'markSixLicenseCardId';
+
+function getBrowserId() {
+  const stored = window.localStorage.getItem(licenseBrowserIdKey);
+  if (stored) return stored;
+
+  const next = createBrowserId();
+  window.localStorage.setItem(licenseBrowserIdKey, next);
+  return next;
+}
+
+function formatLicenseDate(value) {
+  if (!value) return '-';
+  return new Date(value).toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function getLicenseDaysLeft(card) {
+  if (!card?.expiresAt) return 0;
+  return Math.max(0, Math.ceil((new Date(card.expiresAt).getTime() - Date.now()) / 86400000));
+}
+
+async function fetchJson(path, options = {}) {
+  const licenseCardId = window.localStorage.getItem(licenseCardIdKey);
+  const licenseBrowserId = window.localStorage.getItem(licenseBrowserIdKey);
+  const licenseHeaders = buildLicenseHeaders(licenseCardId, licenseBrowserId);
+  const response = await fetch(path, {
+    credentials: 'same-origin',
+    ...options,
+    headers: {
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...licenseHeaders,
+      ...(options.headers || {}),
+    },
+  });
+  const payload = await readJsonResponse(response);
+  return { response, payload };
+}
+
+function LicenseGate({ children }) {
+  const [browserId] = useState(() => getBrowserId());
+  const [licenseCard, setLicenseCard] = useState(null);
+  const [cardCode, setCardCode] = useState('');
+  const [status, setStatus] = useState('checking');
+  const [errorText, setErrorText] = useState('');
+
+  useEffect(() => {
+    async function checkSession() {
+      const cardId = window.localStorage.getItem(licenseCardIdKey);
+      if (!cardId) {
+        setStatus('idle');
+        return;
+      }
+
+      try {
+        const { response, payload } = await fetchJson(
+          `/api/license/session?cardId=${encodeURIComponent(cardId)}&browserId=${encodeURIComponent(browserId)}`,
+        );
+        if (!response.ok || !payload.ok) throw new Error(payload.error || '卡密已失效');
+
+        setLicenseCard(payload.card);
+        setStatus('authorized');
+      } catch (error) {
+        window.localStorage.removeItem(licenseCardIdKey);
+        setErrorText(error instanceof Error ? error.message : '卡密校验失败，请重新激活');
+        setStatus('idle');
+      }
+    }
+
+    void checkSession();
+  }, [browserId]);
+
+  async function handleActivate(event) {
+    event.preventDefault();
+    if (!cardCode.trim()) return;
+
+    setStatus('activating');
+    setErrorText('');
+    try {
+      const { response, payload } = await fetchJson('/api/license/activate', {
+        method: 'POST',
+        body: JSON.stringify({
+          code: cardCode.trim(),
+          browserId,
+        }),
+      });
+
+      if (!response.ok || !payload.ok) throw new Error(payload.error || '卡密激活失败');
+
+      window.localStorage.setItem(licenseCardIdKey, payload.card.id);
+      setLicenseCard(payload.card);
+      setStatus('authorized');
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : '卡密激活失败');
+      setStatus('idle');
+    }
+  }
+
+  if (status === 'authorized') {
+    return (
+      <>
+        <div className="license-ribbon">
+          <ShieldCheck size={16} aria-hidden="true" />
+          <span>已激活，剩余 {getLicenseDaysLeft(licenseCard)} 天，到期 {formatLicenseDate(licenseCard?.expiresAt)}</span>
+        </div>
+        {children}
+      </>
+    );
+  }
+
+  return (
+    <main className="license-shell">
+      <section className="license-panel">
+        <div className="license-mark">
+          <Lock size={30} aria-hidden="true" />
+        </div>
+        <p className="section-label">Paid Access</p>
+        <h1>卡密激活</h1>
+        <form className="license-form" onSubmit={handleActivate}>
+          <label>
+            输入卡密
+            <input
+              value={cardCode}
+              onChange={(event) => setCardCode(event.target.value.toUpperCase())}
+              placeholder="MK6-XXXX-XXXX-XXXX"
+              autoComplete="off"
+              disabled={status === 'checking' || status === 'activating'}
+            />
+          </label>
+          <button type="submit" className="primary-button" disabled={!cardCode.trim() || status === 'checking' || status === 'activating'}>
+            <KeyRound size={18} aria-hidden="true" />
+            {status === 'activating' ? '正在激活' : status === 'checking' ? '正在校验' : '激活进入工作台'}
+          </button>
+        </form>
+        {errorText && <p className="license-error">{errorText}</p>}
+      </section>
+    </main>
+  );
+}
+
+function AdminCardsPage() {
+  const [isAuthed, setIsAuthed] = useState(false);
+  const [password, setPassword] = useState('');
+  const [cards, setCards] = useState([]);
+  const [plainCodes, setPlainCodes] = useState([]);
+  const [copiedCode, setCopiedCode] = useState('');
+  const [count, setCount] = useState(1);
+  const [durationDays, setDurationDays] = useState(30);
+  const [note, setNote] = useState('');
+  const [statusText, setStatusText] = useState('');
+  const [isBusy, setIsBusy] = useState(false);
+  const [selectedCardId, setSelectedCardId] = useState('');
+  const selectedCard = cards.find((card) => card.id === selectedCardId) || null;
+
+  async function loadCards() {
+    const { response, payload } = await fetchJson('/api/admin/cards');
+    if (!response.ok || !payload.ok) {
+      setIsAuthed(false);
+      throw new Error(payload.error || '请先登录后台');
+    }
+
+    const nextCards = payload.cards || [];
+    setCards(nextCards);
+    setSelectedCardId((current) => {
+      if (current && nextCards.some((card) => card.id === current)) return current;
+      return nextCards[0]?.id || '';
+    });
+    setIsAuthed(true);
+  }
+
+  useEffect(() => {
+    void loadCards().catch(() => {});
+  }, []);
+
+  async function handleLogin(event) {
+    event.preventDefault();
+    setIsBusy(true);
+    setStatusText('');
+    try {
+      const { response, payload } = await fetchJson('/api/admin/login', {
+        method: 'POST',
+        body: JSON.stringify({ password }),
+      });
+      if (!response.ok || !payload.ok) throw new Error(payload.error || '登录失败');
+      await loadCards();
+      setStatusText('已登录后台');
+    } catch (error) {
+      setStatusText(error instanceof Error ? error.message : '登录失败');
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function handleGenerate(event) {
+    event.preventDefault();
+    setIsBusy(true);
+    setStatusText('');
+    try {
+      const { response, payload } = await fetchJson('/api/admin/cards/generate', {
+        method: 'POST',
+        body: JSON.stringify({
+          count,
+          durationDays,
+          note,
+        }),
+      });
+      if (!response.ok || !payload.ok) throw new Error(payload.error || '生成失败');
+      setPlainCodes(payload.plainCodes || []);
+      setCopiedCode('');
+      await loadCards();
+      setStatusText(`已生成 ${payload.plainCodes?.length || 0} 张卡密`);
+    } catch (error) {
+      setStatusText(error instanceof Error ? error.message : '生成失败');
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function updateCard(pathname, successText) {
+    setIsBusy(true);
+    setStatusText('');
+    try {
+      const { response, payload } = await fetchJson(pathname, { method: 'POST' });
+      if (!response.ok || !payload.ok) throw new Error(payload.error || successText);
+      await loadCards();
+      setStatusText(successText);
+    } catch (error) {
+      setStatusText(error instanceof Error ? error.message : successText);
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function deleteCard(card) {
+    const label = card.note || card.id;
+    if (!window.confirm(`确定删除这张卡密吗？\n${label}\n删除后列表将不再显示，已激活用户也不能继续使用。`)) return;
+
+    await updateCard(`/api/admin/cards/${card.id}/delete`, '已删除卡密');
+  }
+
+  async function copyGeneratedCode(code) {
+    await navigator.clipboard.writeText(code);
+    setCopiedCode(code);
+    window.setTimeout(() => {
+      setCopiedCode((current) => (current === code ? '' : current));
+    }, 1400);
+  }
+
+  if (!isAuthed) {
+    return (
+      <main className="license-shell">
+        <section className="license-panel">
+          <div className="license-mark">
+            <ShieldCheck size={30} aria-hidden="true" />
+          </div>
+          <p className="section-label">Admin</p>
+          <h1>卡密后台</h1>
+          <form className="license-form" onSubmit={handleLogin}>
+            <label>
+              管理密码
+              <input
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                type="password"
+                autoComplete="current-password"
+              />
+            </label>
+            <button type="submit" className="primary-button" disabled={!password.trim() || isBusy}>
+              <Lock size={18} aria-hidden="true" />
+              登录后台
+            </button>
+          </form>
+          {statusText && <p className="license-error">{statusText}</p>}
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="admin-shell">
+      <header className="topbar admin-topbar">
+        <div>
+          <p className="eyebrow">Admin</p>
+          <h1>卡密后台</h1>
+        </div>
+        <a className="admin-link" href="/">返回工作台</a>
+      </header>
+
+      <section className="admin-grid">
+        <form className="panel admin-form" onSubmit={handleGenerate}>
+          <div className="panel-heading">
+            <div>
+              <p className="section-label">生成卡密</p>
+              <h2>创建新卡</h2>
+            </div>
+            <Plus size={22} aria-hidden="true" />
+          </div>
+          <div className="field-grid">
+            <label>
+              数量
+              <input value={count} onChange={(event) => setCount(event.target.value)} type="number" min="1" max="200" />
+            </label>
+            <label>
+              有效天数
+              <input value={durationDays} onChange={(event) => setDurationDays(event.target.value)} type="number" min="1" max="3650" />
+            </label>
+            <label className="full-field">
+              备注
+              <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="客户名或用途" />
+            </label>
+          </div>
+          <button type="submit" className="primary-button" disabled={isBusy}>
+            生成卡密
+          </button>
+          {statusText && <p className="admin-status">{statusText}</p>}
+        </form>
+
+        <section className="panel generated-panel">
+          <p className="section-label">明文卡密</p>
+          <h2>仅本次显示</h2>
+          <div className="generated-list">
+            {plainCodes.length ? (
+              toGeneratedCodeRows(plainCodes).map(({ id, code }) => (
+                <div className="generated-code-row" key={id}>
+                  <code>{code}</code>
+                  <button type="button" onClick={() => copyGeneratedCode(code)} title="复制卡密">
+                    <ClipboardCopy size={15} aria-hidden="true" />
+                    {copiedCode === code ? '已复制' : '复制'}
+                  </button>
+                </div>
+              ))
+            ) : (
+              <span>生成后这里会显示可复制的明文卡密</span>
+            )}
+          </div>
+        </section>
+      </section>
+
+      <section className="card-admin-grid">
+      <section className="panel card-list-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="section-label">卡密列表</p>
+            <h2>{cards.length} 张卡</h2>
+          </div>
+          <button type="button" className="ghost-button" onClick={() => loadCards()} disabled={isBusy}>
+            刷新
+          </button>
+        </div>
+        <div className="card-table">
+          {cards.map((card) => (
+            <article
+              className={`card-row ${selectedCardId === card.id ? 'is-selected' : ''}`}
+              key={card.id}
+              onClick={() => setSelectedCardId(card.id)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') setSelectedCardId(card.id);
+              }}
+            >
+              <div>
+                <strong>{card.note || '未备注'}</strong>
+                <span>{card.durationDays} 天 · {card.isBound ? '已绑定' : '未绑定'} · 到期 {formatLicenseDate(card.expiresAt)}</span>
+              </div>
+              <b className={`card-status is-${card.status}`}>{card.status}</b>
+              <div className="card-actions" onClick={(event) => event.stopPropagation()}>
+                <button
+                  type="button"
+                  className="icon-button"
+                  onClick={() => updateCard(`/api/admin/cards/${card.id}/reset-binding`, '已解绑卡密')}
+                  disabled={isBusy || card.status !== 'active'}
+                  title="解绑浏览器"
+                >
+                  <Link2Off size={16} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className="icon-button"
+                  onClick={() => updateCard(`/api/admin/cards/${card.id}/disable`, '已禁用卡密')}
+                  disabled={isBusy || card.status === 'disabled'}
+                  title="禁用卡密"
+                >
+                  <Ban size={16} aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className="icon-button danger-button"
+                  onClick={() => deleteCard(card)}
+                  disabled={isBusy}
+                  title="删除卡密"
+                >
+                  <Trash2 size={16} aria-hidden="true" />
+                </button>
+              </div>
+            </article>
+          ))}
+          {!cards.length && (
+            <div className="empty-card-list">
+              <Info size={18} aria-hidden="true" />
+              <span>暂无卡密，先在上方生成新卡。</span>
+            </div>
+          )}
+        </div>
+      </section>
+      <aside className="panel card-detail-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="section-label">卡密信息</p>
+            <h2>{selectedCard ? (selectedCard.note || '未备注卡密') : '未选择卡密'}</h2>
+          </div>
+          <Info size={22} aria-hidden="true" />
+        </div>
+        {selectedCard ? (
+          <dl className="card-detail-list">
+            <div>
+              <dt>卡密</dt>
+              <dd className="detail-code-line">
+                {selectedCard.code ? (
+                  <>
+                    <code>{selectedCard.code}</code>
+                    <button type="button" onClick={() => copyGeneratedCode(selectedCard.code)}>
+                      <ClipboardCopy size={14} aria-hidden="true" />
+                      {copiedCode === selectedCard.code ? '已复制' : '复制'}
+                    </button>
+                  </>
+                ) : (
+                  <span>旧卡未保存明文</span>
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>卡密 ID</dt>
+              <dd>{selectedCard.id}</dd>
+            </div>
+            <div>
+              <dt>状态</dt>
+              <dd>{selectedCard.status}</dd>
+            </div>
+            <div>
+              <dt>有效天数</dt>
+              <dd>{selectedCard.durationDays} 天</dd>
+            </div>
+            <div>
+              <dt>绑定状态</dt>
+              <dd>{selectedCard.isBound ? '已绑定浏览器' : '未绑定'}</dd>
+            </div>
+            <div>
+              <dt>创建时间</dt>
+              <dd>{formatLicenseDate(selectedCard.createdAt)}</dd>
+            </div>
+            <div>
+              <dt>激活时间</dt>
+              <dd>{formatLicenseDate(selectedCard.activatedAt)}</dd>
+            </div>
+            <div>
+              <dt>到期时间</dt>
+              <dd>{formatLicenseDate(selectedCard.expiresAt)}</dd>
+            </div>
+            <div>
+              <dt>最近使用</dt>
+              <dd>{formatLicenseDate(selectedCard.lastSeenAt)}</dd>
+            </div>
+            <div>
+              <dt>备注</dt>
+              <dd>{selectedCard.note || '-'}</dd>
+            </div>
+          </dl>
+        ) : (
+          <div className="empty-card-list">
+            <Info size={18} aria-hidden="true" />
+            <span>点击左侧任意卡密查看详情。</span>
+          </div>
+        )}
+      </aside>
+      </section>
+    </main>
+  );
+}
+
+function WorkbenchApp() {
   const [betMode, setBetMode] = useState('pingma');
   const [modeTexts, setModeTexts] = useState(initialModeTexts);
   const [screenshots, setScreenshots] = useState([]);
@@ -292,8 +797,7 @@ export default function App() {
     setLatestDrawStatus(forceRefresh ? '正在重新同步开奖' : '正在同步最新开奖');
 
     try {
-      const response = await fetch(`/api/latest-lottery-result${forceRefresh ? '?refresh=1' : ''}`);
-      const payload = await readJsonResponse(response);
+      const { response, payload } = await fetchJson(`/api/latest-lottery-result${forceRefresh ? '?refresh=1' : ''}`);
 
       if (!response.ok || !payload.ok || !payload.data) {
         throw new Error(payload.sync?.lastError || payload.error || '没有拿到最新开奖');
@@ -518,6 +1022,9 @@ export default function App() {
           maxSide: 2600,
           minWidth: 900,
           quality: 0.92,
+          crop: {
+            top: 0.105,
+          },
         });
         const compressRatio = compressedImage.originalSize
           ? Math.round((compressedImage.compressedSize / compressedImage.originalSize) * 100)
@@ -957,5 +1464,17 @@ export default function App() {
 
       </section>
     </main>
+  );
+}
+
+export default function App() {
+  if (window.location.pathname === '/admin/cards') {
+    return <AdminCardsPage />;
+  }
+
+  return (
+    <LicenseGate>
+      <WorkbenchApp />
+    </LicenseGate>
   );
 }
