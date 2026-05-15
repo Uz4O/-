@@ -119,6 +119,23 @@ describe('parseBetGroups', () => {
     assert.deepEqual(groups.map((group) => group.amountPerNumber), [10, 100, 70, 300]);
   });
 
+  it('解析识别文本中带空格和中文标点的平码', () => {
+    const groups = parseBetGroups(
+      [
+        '澳门彩特码 10号 12号 14号 24号 26号 32号',
+        '34号 36号 38号 40号 42号 48号一个号各下',
+        '10元，4号14号24号34号44号一个号各下',
+        '100元，5号15号25号35号45号一个号各下',
+        '70元',
+        '香港特码 27号下 300元',
+      ].join('\n'),
+      'pingma',
+    );
+
+    assert.equal(groups.reduce((sum, group) => sum + group.betAmount, 0), 1270);
+    assert.deepEqual(groups.map((group) => group.amountPerNumber), [10, 100, 70, 300]);
+  });
+
   it('解析连码手工组合', () => {
     const groups = parseBetGroups('46.47\n4.14\n24.32\n5.9二中二出50', 'lianma');
 

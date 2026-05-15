@@ -239,7 +239,7 @@ function parseMultilineChineseBetGroups(rawText) {
   const chineseText = String(rawText || '')
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter((line) => /号|各下|各押|各买|一个号|个号|每号|下\d|押\d|买\d|元|特码/.test(line))
+    .filter((line) => !line.includes('/') && /号|各下|各押|各买|一个号|个号|每号|下\d|押\d|买\d|元|特码/.test(line))
     .join('.');
   const chineseBetText = chineseText.replace(
     /(?:一个号|个号|每个号|每号|各号)?(?:各下|各押|各买|各|下|押|买)\.(\d+元?)/g,
@@ -247,7 +247,9 @@ function parseMultilineChineseBetGroups(rawText) {
   );
   const normalizedText = chineseBetText
     .replace(/[。；;]/g, '.')
-    .replace(/[，,]/g, '.');
+    .replace(/[，,]/g, '.')
+    .replace(/一\.个号/g, '一个号')
+    .replace(/\s+/g, '');
   const groups = [];
   const groupPattern = /(\d+)\s*元/g;
   let match;
@@ -575,8 +577,9 @@ function parseBetGroups(rawText, betMode = 'pingma') {
         ? multilineSlashGroups
         : parsedSlashGroups;
     const chineseGroups =
+      multilineChineseGroups.length > parsedChineseGroups.length ||
       multilineChineseGroups.reduce((sum, group) => sum + group.betAmount, 0) >
-      parsedChineseGroups.reduce((sum, group) => sum + group.betAmount, 0)
+        parsedChineseGroups.reduce((sum, group) => sum + group.betAmount, 0)
         ? multilineChineseGroups
         : parsedChineseGroups;
 
