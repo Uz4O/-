@@ -773,6 +773,74 @@ function joinBetText(current, addition) {
   return cleanCurrent ? `${cleanCurrent}\n${cleanAddition}` : cleanAddition;
 }
 
+function splitRecognizedChatLines(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function normalizeOverlapLine(line) {
+  return String(line || '')
+    .replace(/[|]/g, '/')
+    .replace(/[。．]/g, '.')
+    .replace(/\s+/g, '')
+    .trim();
+}
+
+function findSuffixPrefixOverlap(leftLines, rightLines) {
+  const left = leftLines.map(normalizeOverlapLine);
+  const right = rightLines.map(normalizeOverlapLine);
+  const maxCount = Math.min(12, left.length, right.length);
+  let best = { count: 0, charLength: 0, score: 0 };
+
+  for (let count = 1; count <= maxCount; count += 1) {
+    const leftStart = left.length - count;
+    let matches = true;
+
+    for (let index = 0; index < count; index += 1) {
+      if (!left[leftStart + index] || left[leftStart + index] !== right[index]) {
+        matches = false;
+        break;
+      }
+    }
+
+    if (matches) {
+      const charLength = right.slice(0, count).reduce((sum, line) => sum + line.length, 0);
+      best = {
+        count,
+        charLength,
+        score: count * 100000 + charLength,
+      };
+    }
+  }
+
+  return best;
+}
+
+function isStrongChatOverlap(overlap) {
+  return overlap.count >= 2 || overlap.charLength >= 16;
+}
+
+function mergeRecognizedChatTexts(texts) {
+  const nodes = texts
+    .map((text) => ({ lines: splitRecognizedChatLines(text) }))
+    .filter((node) => node.lines.length);
+  const mergedLines = [];
+
+  nodes.forEach((node) => {
+    const overlap = findSuffixPrefixOverlap(mergedLines, node.lines);
+    const duplicateLineCount = isStrongChatOverlap(overlap) ? overlap.count : 0;
+    mergedLines.push(...node.lines.slice(duplicateLineCount));
+  });
+
+  return mergedLines.join('\n');
+}
+
+function classifyRecognizedChatTexts(texts) {
+  return classifyBetText(mergeRecognizedChatTexts(texts));
+}
+
 function classifyBetText(rawText) {
   const buckets = { ...initialModeTexts };
   const lines = String(rawText || '')
@@ -927,6 +995,7 @@ export {
   calculateAllModeLotteryResult,
   calculateLotteryResult,
   classifyBetText,
+  classifyRecognizedChatTexts,
   cleanRecognizedAmount,
   formatMoney,
   formatTableBetsAsBetText,
@@ -936,6 +1005,7 @@ export {
   initialSummary,
   joinBetText,
   markSixNumbers,
+  mergeRecognizedChatTexts,
   normalizeMarkSixNumber,
   parseBetGroups,
   zodiacNumberMap,

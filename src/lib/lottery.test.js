@@ -7,6 +7,8 @@ import {
   calculateAllModeLotteryResult,
   calculateLotteryResult,
   classifyBetText,
+  classifyRecognizedChatTexts,
+  mergeRecognizedChatTexts,
   parseBetGroups,
 } from './lottery.js';
 
@@ -416,5 +418,48 @@ describe('classifyBetText', () => {
 
     assert.equal(result.fushi, '牛鸡兔龙复四三各五十');
     assert.equal(result.pingma, '狗20');
+  });
+});
+
+describe('mergeRecognizedChatTexts', () => {
+  it('去掉相邻聊天截图尾部和头部的重复内容', () => {
+    const merged = mergeRecognizedChatTexts([
+      '07.09.13\n20.33.42\n46.47\n4.14\n24.32\n9.10',
+      '46.47\n4.14\n24.32\n9.10\n31.33\n21.25\n5.9二中二出50',
+    ]);
+
+    assert.equal(
+      merged,
+      '07.09.13\n20.33.42\n46.47\n4.14\n24.32\n9.10\n31.33\n21.25\n5.9二中二出50',
+    );
+  });
+
+  it('上传顺序反了且相邻方向没有重叠时保留原始顺序', () => {
+    const merged = mergeRecognizedChatTexts([
+      '46.47\n4.14\n24.32\n9.10\n31.33\n21.25\n5.9二中二出50',
+      '07.09.13\n20.33.42\n46.47\n4.14\n24.32\n9.10',
+    ]);
+
+    assert.equal(
+      merged,
+      '46.47\n4.14\n24.32\n9.10\n31.33\n21.25\n5.9二中二出50\n07.09.13\n20.33.42\n46.47\n4.14\n24.32\n9.10',
+    );
+  });
+
+  it('没有相邻重叠时保留原始上传顺序', () => {
+    const merged = mergeRecognizedChatTexts(['狗20', '复试三中三各20\n23.22.27.06']);
+
+    assert.equal(merged, '狗20\n复试三中三各20\n23.22.27.06');
+  });
+});
+
+describe('classifyRecognizedChatTexts', () => {
+  it('合并多张聊天 OCR 文本时只删除真实重叠内容', () => {
+    const result = classifyRecognizedChatTexts([
+      '46.47\n4.14\n24.32\n9.10',
+      '31.33\n21.25\n5.9二中二出50',
+    ]);
+
+    assert.equal(result.lianma, '46.47\n4.14\n24.32\n9.10\n31.33\n21.25\n5.9二中二出50');
   });
 });

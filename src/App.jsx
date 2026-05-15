@@ -21,7 +21,7 @@ import {
   buildReportText,
   calculateAllModeDraftSummary,
   calculateAllModeLotteryResult,
-  classifyBetText,
+  classifyRecognizedChatTexts,
   formatMoney,
   formatTableBetsAsBetText,
   getZodiacByNumber,
@@ -1047,14 +1047,14 @@ function WorkbenchApp() {
         if (formattedText) recognizedTexts.push(formattedText);
       }
 
-      const combinedText = recognizedTexts.join('\n');
-      if (!combinedText) {
+      const classifiedTexts = classifyRecognizedChatTexts(recognizedTexts);
+      const hasClassifiedText = Object.values(classifiedTexts).some((text) => text.trim());
+      if (!hasClassifiedText) {
         setRecognitionProgress(0);
         setStatusText('OCR 没有提取到有效投注内容，请换更清晰截图或手动填写');
         return;
       }
 
-      const classifiedTexts = classifyBetText(combinedText);
       const counts = Object.entries(classifiedTexts)
         .filter(([, text]) => text.trim())
         .map(([mode, text]) => `${betModes.find((item) => item.id === mode)?.label || mode}${text.split(/\r?\n/).filter(Boolean).length}行`);
