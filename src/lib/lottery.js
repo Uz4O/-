@@ -88,8 +88,61 @@ function getZodiacByNumber(value) {
     Object.entries(zodiacNumberMap).find(([, numbers]) => numbers.includes(normalizedNumber))?.[0] || ''
   );
 }
+
+function expandCompactMarkSixNumberRuns(text) {
+  function getValidNumbers(digits) {
+    const numbers = digits.match(/\d{2}/g) || [];
+    return numbers.every((number) => normalizeMarkSixNumber(number)) ? numbers : [];
+  }
+
+  function removeSingleDuplicateDigit(digits) {
+    const candidates = new Set();
+    for (let index = 1; index < digits.length; index += 1) {
+      if (digits[index] !== digits[index - 1]) continue;
+      const candidate = `${digits.slice(0, index)}${digits.slice(index + 1)}`;
+      if (candidate.length % 2 === 0 && getValidNumbers(candidate).length) {
+        candidates.add(candidate);
+      }
+    }
+    return candidates.size === 1 ? [...candidates][0] : '';
+  }
+
+  return String(text || '').replace(/(?<digits>\d{4,})(?:(?<gap>[ \t]+)(?<next>\d{2})(?=\D|$))?/g, (match, digits, gap, next) => {
+    if (digits.length < 4) return match;
+
+    let numberDigits = digits;
+    let suffix = '';
+    let separator = '';
+    if (numberDigits.length % 2 === 0) {
+      suffix = next || '';
+      separator = gap || '';
+    } else {
+      const duplicateDigitFix = removeSingleDuplicateDigit(numberDigits);
+      if (duplicateDigitFix) {
+        numberDigits = duplicateDigitFix;
+        suffix = next || '';
+        separator = gap || '';
+      } else {
+        if (!next || numberDigits.at(-1) !== next[0]) return match;
+        numberDigits = numberDigits.slice(0, -1);
+        suffix = next;
+        separator = gap;
+      }
+    }
+
+    const numbers = getValidNumbers(numberDigits);
+    if (!numbers.length) return match;
+
+    return `${numbers.join(' ')}${suffix ? `${separator}${suffix}` : ''}`;
+  });
+}
+
+function normalizeCompactMarkSixNumberRuns(text) {
+  return expandCompactMarkSixNumberRuns(text);
+}
+
 function parseBetNumbers(text) {
-  return text
+  return expandCompactMarkSixNumberRuns(text)
     .split(/\D+/)
     .map((token) => token.trim())
     .filter(Boolean)
@@ -172,6 +225,7 @@ function parseSlashBetGroups(line, lineIndex, userName) {
 function parseMultilineSlashBetGroups(rawText) {
   const slashLines = [];
   let previousKeptLine = '';
+  let pendingNumberLines = [];
   String(rawText || '')
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -180,8 +234,22 @@ function parseMultilineSlashBetGroups(rawText) {
       const isSlashLine = line.includes('/');
       const isContinuationLine = previousKeptLine && /\.\d$/.test(previousKeptLine) && parseBetNumbers(line).length >= 2;
       const isAmountContinuationLine = previousKeptLine && /\/\d{1,2}$/.test(previousKeptLine) && /^\d{1,2}$/.test(line);
-      if (!isSlashLine && !isContinuationLine && !isAmountContinuationLine) return;
-      if (isSlashLine && previousKeptLine && !isContinuationLine) slashLines.push('.');
+      const isPendingNumberLine = !isSlashLine && !isContinuationLine && !isAmountContinuationLine && parseBetNumbers(line).length >= 2;
+      if (isPendingNumberLine) {
+        pendingNumberLines.push(line);
+        return;
+      }
+      if (!isSlashLine && !isContinuationLine && !isAmountContinuationLine) {
+        pendingNumberLines = [];
+        return;
+      }
+      if (isSlashLine && pendingNumberLines.length) {
+        if (previousKeptLine) slashLines.push('.');
+        slashLines.push(...pendingNumberLines);
+        pendingNumberLines = [];
+      } else if (isSlashLine && previousKeptLine && !isContinuationLine) {
+        slashLines.push('.');
+      }
       slashLines.push(line);
       previousKeptLine = line;
     });
@@ -759,11 +827,23 @@ function cleanChatOcrText(text) {
       line
         .replace(/[|]/g, '/')
         .replace(/[。．]/g, '.')
-        .replace(/\s+/g, '')
+        .replace(/\s+/g, ' ')
         .trim(),
     )
+    .filter((line) => !isChatUiNoiseLine(line))
     .filter((line) => /(\d+[./]|号|各下|各押|各买|下|押|买|[鼠牛虎兔龙蛇马羊猴鸡狗猪])/.test(line))
     .join('\n');
+}
+
+function isChatUiNoiseLine(line) {
+  const normalizedLine = String(line || '').trim();
+  const compactLine = normalizedLine.replace(/\s+/g, '');
+
+  if (!compactLine) return true;
+  if (compactLine.includes('文件传输助手')) return true;
+  if (/^\d{1,2}:\d{2}(?:[.:]\d{1,3})?$/.test(compactLine)) return true;
+
+  return false;
 }
 
 function joinBetText(current, addition) {
@@ -786,6 +866,39 @@ function normalizeOverlapLine(line) {
     .replace(/[。．]/g, '.')
     .replace(/\s+/g, '')
     .trim();
+}
+
+function lineSimilarity(left, right) {
+  const a = normalizeOverlapLine(left);
+  const b = normalizeOverlapLine(right);
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+
+  const maxLength = Math.max(a.length, b.length);
+  let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+
+  for (let leftIndex = 1; leftIndex <= a.length; leftIndex += 1) {
+    const current = [leftIndex];
+    for (let rightIndex = 1; rightIndex <= b.length; rightIndex += 1) {
+      const substitutionCost = a[leftIndex - 1] === b[rightIndex - 1] ? 0 : 1;
+      current[rightIndex] = Math.min(
+        previous[rightIndex] + 1,
+        current[rightIndex - 1] + 1,
+        previous[rightIndex - 1] + substitutionCost,
+      );
+    }
+    previous = current;
+  }
+
+  return (maxLength - previous[b.length]) / maxLength;
+}
+
+function areSimilarOverlapLines(leftLine, rightLine) {
+  const left = normalizeOverlapLine(leftLine);
+  const right = normalizeOverlapLine(rightLine);
+  const maxLength = Math.max(left.length, right.length);
+  if (maxLength < 6) return left === right;
+  return lineSimilarity(left, right) >= 0.72;
 }
 
 function findSuffixPrefixOverlap(leftLines, rightLines) {
@@ -819,7 +932,71 @@ function findSuffixPrefixOverlap(leftLines, rightLines) {
 }
 
 function isStrongChatOverlap(overlap) {
-  return overlap.count >= 2 || overlap.charLength >= 16;
+  return overlap.count >= 2 || overlap.charLength >= 10;
+}
+
+function findContainedPrefixOverlap(leftLines, rightLines) {
+  const left = leftLines.map(normalizeOverlapLine);
+  const right = rightLines.map(normalizeOverlapLine);
+  let best = { count: 0, charLength: 0, score: 0 };
+
+  for (let start = 0; start < left.length; start += 1) {
+    let count = 0;
+    while (start + count < left.length && count < right.length && left[start + count] === right[count]) {
+      count += 1;
+    }
+
+    if (!count) continue;
+    const reachesLeftTail = start + count === left.length;
+    if (!reachesLeftTail) continue;
+
+    const charLength = right.slice(0, count).reduce((sum, line) => sum + line.length, 0);
+    const score = count * 100000 + charLength;
+    if (score > best.score) {
+      best = { count, charLength, score };
+    }
+  }
+
+  return best;
+}
+
+function findFuzzyContainedPrefixOverlap(leftLines, rightLines) {
+  let best = { count: 0, charLength: 0, score: 0 };
+
+  for (let start = 0; start < leftLines.length; start += 1) {
+    let count = 0;
+    let exactCount = 0;
+    let similaritySum = 0;
+
+    while (start + count < leftLines.length && count < rightLines.length) {
+      const leftLine = leftLines[start + count];
+      const rightLine = rightLines[count];
+      if (!areSimilarOverlapLines(leftLine, rightLine)) break;
+
+      if (normalizeOverlapLine(leftLine) === normalizeOverlapLine(rightLine)) exactCount += 1;
+      similaritySum += lineSimilarity(leftLine, rightLine);
+      count += 1;
+    }
+
+    if (!count) continue;
+    const reachesLeftTail = start + count === leftLines.length;
+    if (!reachesLeftTail) continue;
+
+    const averageSimilarity = similaritySum / count;
+    if (count < 2 && averageSimilarity < 0.9) continue;
+    if (count >= 2 && exactCount === 0 && averageSimilarity < 0.82) continue;
+
+    const charLength = rightLines
+      .slice(0, count)
+      .map(normalizeOverlapLine)
+      .reduce((sum, line) => sum + line.length, 0);
+    const score = count * 100000 + Math.round(averageSimilarity * 1000) + charLength;
+    if (score > best.score) {
+      best = { count, charLength, score };
+    }
+  }
+
+  return best;
 }
 
 function mergeRecognizedChatTexts(texts) {
@@ -829,7 +1006,12 @@ function mergeRecognizedChatTexts(texts) {
   const mergedLines = [];
 
   nodes.forEach((node) => {
-    const overlap = findSuffixPrefixOverlap(mergedLines, node.lines);
+    const suffixOverlap = findSuffixPrefixOverlap(mergedLines, node.lines);
+    const containedOverlap = findContainedPrefixOverlap(mergedLines, node.lines);
+    const fuzzyContainedOverlap = findFuzzyContainedPrefixOverlap(mergedLines, node.lines);
+    const overlap = [suffixOverlap, containedOverlap, fuzzyContainedOverlap].reduce((best, current) =>
+      current.score > best.score ? current : best,
+    );
     const duplicateLineCount = isStrongChatOverlap(overlap) ? overlap.count : 0;
     mergedLines.push(...node.lines.slice(duplicateLineCount));
   });
@@ -841,6 +1023,14 @@ function classifyRecognizedChatTexts(texts) {
   return classifyBetText(mergeRecognizedChatTexts(texts));
 }
 
+function mergeModeTexts(currentTexts, nextTexts) {
+  return {
+    pingma: mergeRecognizedChatTexts([currentTexts?.pingma, nextTexts?.pingma]),
+    lianma: mergeRecognizedChatTexts([currentTexts?.lianma, nextTexts?.lianma]),
+    fushi: mergeRecognizedChatTexts([currentTexts?.fushi, nextTexts?.fushi]),
+  };
+}
+
 function classifyBetText(rawText) {
   const buckets = { ...initialModeTexts };
   const lines = String(rawText || '')
@@ -850,24 +1040,32 @@ function classifyBetText(rawText) {
         .replace(/[|]/g, '/')
         .replace(/[。．]/g, '.')
         .replace(/[，,]/g, '.')
-        .replace(/\s+/g, '')
+        .replace(/\s+/g, ' ')
         .trim(),
     )
+    .filter((line) => !isChatUiNoiseLine(line))
     .filter(Boolean);
 
   let currentMode = 'pingma';
   let pendingFushiHeader = '';
   let pendingFushiNumberLines = [];
   let pendingLianmaLines = [];
+  let pendingAmbiguousComboLines = [];
 
   function append(mode, line) {
-    buckets[mode] = joinBetText(buckets[mode], line);
+    buckets[mode] = joinBetText(buckets[mode], normalizeCompactMarkSixNumberRuns(line));
   }
 
   function flushPendingLianma() {
     if (!pendingLianmaLines.length) return;
     append('lianma', pendingLianmaLines.join('\n'));
     pendingLianmaLines = [];
+  }
+
+  function flushPendingAmbiguousComboLines(mode = 'pingma') {
+    if (!pendingAmbiguousComboLines.length) return;
+    append(mode, pendingAmbiguousComboLines.join('\n'));
+    pendingAmbiguousComboLines = [];
   }
 
   function flushPendingFushiHeader() {
@@ -904,15 +1102,29 @@ function classifyBetText(rawText) {
       /^\d+(?:\.\d+)?元?$/.test(line) &&
       /(?:各下|各押|各买|各|下|押|买)$/.test(previousPingmaLine);
 
+    if (line === '0' && !continuesSlashAmountLine) {
+      return;
+    }
+
+    if (pendingAmbiguousComboLines.length && (isLianmaClosingLine || (isComboNumberLine && currentMode !== 'fushi'))) {
+      pendingLianmaLines.push(...pendingAmbiguousComboLines);
+      pendingAmbiguousComboLines = [];
+      currentMode = 'lianma';
+    } else if (pendingAmbiguousComboLines.length && !continuesSlashPingmaLine && !continuesSlashAmountLine && !continuesChineseAmountLine) {
+      flushPendingAmbiguousComboLines('pingma');
+    }
+
     if (isFushiSlashLine) {
+      flushPendingAmbiguousComboLines('pingma');
       flushPendingLianma();
       flushPendingFushiHeader();
-      append('fushi', line);
+      append('fushi', line.replace(/\s+/g, ''));
       currentMode = 'fushi';
       return;
     }
 
     if (isZodiacFushiLine) {
+      flushPendingAmbiguousComboLines('pingma');
       flushPendingLianma();
       flushPendingFushiHeader();
       append('fushi', line);
@@ -921,6 +1133,7 @@ function classifyBetText(rawText) {
     }
 
     if (isUnsupportedComboLine && hasAmount) {
+      flushPendingAmbiguousComboLines('pingma');
       flushPendingLianma();
       flushPendingFushiHeader();
       append('fushi', line);
@@ -929,6 +1142,7 @@ function classifyBetText(rawText) {
     }
 
     if (isFushiHeader) {
+      flushPendingAmbiguousComboLines('pingma');
       flushPendingLianma();
       flushPendingFushiHeader();
       currentMode = 'fushi';
@@ -951,6 +1165,7 @@ function classifyBetText(rawText) {
     }
 
     if (isPingmaLine || isZodiacPingmaLine) {
+      flushPendingAmbiguousComboLines('pingma');
       flushPendingLianma();
       flushPendingFushiHeader();
       append('pingma', line);
@@ -958,7 +1173,13 @@ function classifyBetText(rawText) {
       return;
     }
 
+    if (continuesSlashPingmaLine && isComboNumberLine && !continuesSlashAmountLine && !continuesChineseAmountLine) {
+      pendingAmbiguousComboLines.push(line);
+      return;
+    }
+
     if (continuesSlashPingmaLine || continuesSlashAmountLine || continuesChineseAmountLine) {
+      flushPendingAmbiguousComboLines('pingma');
       flushPendingLianma();
       flushPendingFushiHeader();
       append('pingma', line);
@@ -967,6 +1188,7 @@ function classifyBetText(rawText) {
     }
 
     if (isComboNumberLine && currentMode === 'fushi') {
+      flushPendingAmbiguousComboLines('pingma');
       if (pendingFushiHeader) {
         pendingFushiNumberLines.push(line);
       } else {
@@ -982,6 +1204,7 @@ function classifyBetText(rawText) {
     }
   });
 
+  flushPendingAmbiguousComboLines('pingma');
   flushPendingLianma();
   flushPendingFushiHeader();
   return buckets;
@@ -1005,6 +1228,7 @@ export {
   initialSummary,
   joinBetText,
   markSixNumbers,
+  mergeModeTexts,
   mergeRecognizedChatTexts,
   normalizeMarkSixNumber,
   parseBetGroups,

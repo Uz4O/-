@@ -8,11 +8,69 @@ import {
   calculateLotteryResult,
   classifyBetText,
   classifyRecognizedChatTexts,
+  mergeModeTexts,
   mergeRecognizedChatTexts,
   parseBetGroups,
 } from './lottery.js';
 
 describe('parseBetGroups', () => {
+  it('parses compact OCR slash numbers as two-digit mark six numbers', () => {
+    const groups = parseBetGroups('123508/250\n4603192741062214/150\n0931441825/100', 'pingma');
+
+    assert.deepEqual(groups.map((group) => group.numbers), [
+      ['12', '35', '08'],
+      ['46', '03', '19', '27', '41', '06', '22', '14'],
+      ['09', '31', '44', '18', '25'],
+    ]);
+    assert.equal(groups.reduce((sum, group) => sum + group.betAmount, 0), 2450);
+  });
+
+  it('parses odd compact OCR runs that duplicate the next number prefix', () => {
+    const groups = parseBetGroups('4603192 27 41 06 22 14/150', 'pingma');
+
+    assert.deepEqual(groups.map((group) => group.numbers), [['46', '03', '19', '27', '41', '06', '22', '14']]);
+    assert.equal(groups.reduce((sum, group) => sum + group.betAmount, 0), 1200);
+  });
+
+  it('parses compact OCR runs with one duplicated digit inserted inside the number run', () => {
+    const groups = parseBetGroups('46031922741062214/150', 'pingma');
+
+    assert.deepEqual(groups.map((group) => group.numbers), [['46', '03', '19', '27', '41', '06', '22', '14']]);
+    assert.equal(groups.reduce((sum, group) => sum + group.betAmount, 0), 1200);
+  });
+
+  it('merges compact OCR number continuation lines into the following slash pingma group', () => {
+    const groups = parseBetGroups('234811/250\n0617293240052137441226\n08153049/150', 'pingma');
+
+    assert.deepEqual(groups.map((group) => group.numbers), [
+      ['23', '48', '11'],
+      ['06', '17', '29', '32', '40', '05', '21', '37', '44', '12', '26', '08', '15', '30', '49'],
+    ]);
+    assert.deepEqual(groups.map((group) => group.amountPerNumber), [250, 150]);
+    assert.equal(groups.reduce((sum, group) => sum + group.betAmount, 0), 3000);
+  });
+
+  it('does not merge Chinese pingma number lines into following slash groups', () => {
+    const groups = parseBetGroups(
+      [
+        '澳门彩特码07号16号28号33号',
+        '45号一个号各下30元,',
+        '234811/250',
+        '0617293240052137441226',
+        '08153049/150',
+      ].join('\n'),
+      'pingma',
+    );
+
+    assert.deepEqual(groups.map((group) => group.numbers), [
+      ['23', '48', '11'],
+      ['06', '17', '29', '32', '40', '05', '21', '37', '44', '12', '26', '08', '15', '30', '49'],
+      ['07', '16', '28', '33', '45'],
+    ]);
+    assert.deepEqual(groups.map((group) => group.amountPerNumber), [250, 150, 30]);
+    assert.equal(groups.reduce((sum, group) => sum + group.betAmount, 0), 3150);
+  });
+
   it('解析平码斜杠、中文金额和生肖投注', () => {
     const groups = parseBetGroups('张三：18..06..12/250..08.16.22/150\n李四：9号14号24号一个号各下30元\n狗20');
 
@@ -378,6 +436,64 @@ describe('buildReportText', () => {
 });
 
 describe('classifyBetText', () => {
+  it('keeps compact OCR number continuation lines in pingma before following slash amount', () => {
+    const result = classifyBetText('234811/250\n0617293240052137441226\n08153049/150');
+    const groups = parseBetGroups(result.pingma, 'pingma');
+
+    assert.equal(result.lianma, '');
+    assert.equal(result.pingma, '23 48 11/250\n06 17 29 32 40 05 21 37 44 12 26\n08 15 30 49/150');
+    assert.deepEqual(groups.map((group) => group.numbers), [
+      ['23', '48', '11'],
+      ['06', '17', '29', '32', '40', '05', '21', '37', '44', '12', '26', '08', '15', '30', '49'],
+    ]);
+    assert.equal(groups.reduce((sum, group) => sum + group.betAmount, 0), 3000);
+  });
+
+  it('preserves OCR spaces and parses spaced slash pingma bets', () => {
+    const result = classifyBetText('12 35 08/250\n46 03 19 27 41 06 22 14/150\n09 31 44 18 25/100');
+    const groups = parseBetGroups(result.pingma, 'pingma');
+
+    assert.equal(result.pingma, '12 35 08/250\n46 03 19 27 41 06 22 14/150\n09 31 44 18 25/100');
+    assert.deepEqual(groups.map((group) => group.numbers), [
+      ['12', '35', '08'],
+      ['46', '03', '19', '27', '41', '06', '22', '14'],
+      ['09', '31', '44', '18', '25'],
+    ]);
+    assert.equal(groups.reduce((sum, group) => sum + group.betAmount, 0), 2450);
+  });
+
+  it('keeps a multiline lianma block together after slash pingma bets', () => {
+    const result = classifyBetText(
+      [
+        '18 06 42/200',
+        '09 31 47 12 25 38/150',
+        '03 14 29 36 44/100',
+        '澳门彩特码08号17号26号39号',
+        '46号一个号各下30元',
+        '05号15号25号35号45号一个',
+        '号各下50元',
+        '11 23 34/250',
+        '07 16 28 41 49 02 19/120',
+        '04 13 22 37/100',
+        '06.18.29',
+        '12.25.44',
+        '03.17.39',
+        '08.21.46三中三每组40',
+      ].join('\n'),
+    );
+
+    assert.equal(result.pingma.includes('06.18.29'), false);
+    assert.match(result.pingma, /澳门彩特码08号17号26号39号/);
+    assert.match(result.pingma, /46号一个号各下30元/);
+    assert.match(result.pingma, /05号15号25号35号45号一个/);
+    assert.match(result.pingma, /号各下50元/);
+    assert.equal(result.pingma.split(/\r?\n/).filter(Boolean).length, 10);
+    assert.equal(result.lianma.includes('澳门彩特码'), false);
+    assert.equal(result.lianma.includes('46号一个号各下30元'), false);
+    assert.equal(result.lianma, '06.18.29\n12.25.44\n03.17.39\n08.21.46三中三每组40');
+    assert.equal(parseBetGroups(result.lianma, 'lianma').reduce((sum, group) => sum + group.betAmount, 0), 160);
+  });
+
   it('把 OCR 文本分类到对应模式', () => {
     const result = classifyBetText('狗20\n46.47\n5.9二中二出50\n复试二中二各20\n23.22.27.06');
 
@@ -451,9 +567,256 @@ describe('mergeRecognizedChatTexts', () => {
 
     assert.equal(merged, '狗20\n复试三中三各20\n23.22.27.06');
   });
+
+  it('再次追加同一段识别结果时不重复复制已有内容', () => {
+    const text = [
+      '12 35 08/250',
+      '46 03 19 27 41 06 22 14/150',
+      '09 31 44 18 25/100',
+    ].join('\n');
+
+    assert.equal(mergeRecognizedChatTexts([text, text]), text);
+  });
+
+  it('去掉下一张开头对应上一张中段到末尾的大段重叠内容', () => {
+    const merged = mergeRecognizedChatTexts([
+      [
+        '14 27 36/250',
+        '03 08 19 22 41 46 09 31/150',
+        '12 25 33 44 48/100',
+        '澳门彩特码06号18号29号37号',
+        '45号一个号各下30元,',
+        '04号14号24号34号44号一个',
+        '号各下20元',
+        '23 05 17/250',
+        '11 28 39 42 07 16 30 48 02 21 35',
+        '44/150',
+        '09 13 26 31/100',
+        '香港特码38号下300元',
+        '05.12.29',
+        '07.18.41',
+        '09.22.36',
+        '15.27.44三中三每组35',
+        '06.14',
+        '21.33',
+        '08.42',
+        '17.39',
+        '25.46',
+        '03.31',
+        '10.28',
+        '05.09二中二出50',
+      ].join('\n'),
+      [
+        '45号一个号各下30元,',
+        '04号14号24号34号44号一个',
+        '号各下20元',
+        '23 05 17/250',
+        '11 28 39 42 07 16 30 48 02 21 35',
+        '44/150',
+        '09 13 26 31/100',
+        '香港特码38号下300元',
+        '05.12.29',
+        '07.18.41',
+        '09.22.36',
+        '15.27.44三中三每组35',
+        '06.14',
+        '21.33',
+        '08.42',
+        '17.39',
+        '25.46',
+        '03.31',
+        '10.28',
+        '05.09二中二出50',
+        '复式三中三各20',
+        '02.11.36.47',
+        '鼠牛兔蛇复四三各五十',
+      ].join('\n'),
+    ]);
+
+    assert.equal(
+      merged,
+      [
+        '14 27 36/250',
+        '03 08 19 22 41 46 09 31/150',
+        '12 25 33 44 48/100',
+        '澳门彩特码06号18号29号37号',
+        '45号一个号各下30元,',
+        '04号14号24号34号44号一个',
+        '号各下20元',
+        '23 05 17/250',
+        '11 28 39 42 07 16 30 48 02 21 35',
+        '44/150',
+        '09 13 26 31/100',
+        '香港特码38号下300元',
+        '05.12.29',
+        '07.18.41',
+        '09.22.36',
+        '15.27.44三中三每组35',
+        '06.14',
+        '21.33',
+        '08.42',
+        '17.39',
+        '25.46',
+        '03.31',
+        '10.28',
+        '05.09二中二出50',
+        '复式三中三各20',
+        '02.11.36.47',
+        '鼠牛兔蛇复四三各五十',
+      ].join('\n'),
+    );
+  });
+
+  it('去掉 OCR 轻微识别差异造成的连码重叠内容', () => {
+    const first = [
+      '05.12.29',
+      '07.18.41',
+      '09.22.36',
+      '15.27.44三中三每组35',
+      '06.14',
+      '21.33',
+      '08.42',
+      '17.39',
+      '25.46',
+      '03.31',
+      '10.28',
+      '05.09二中二出50',
+    ].join('\n');
+    const second = [
+      '05.12.29',
+      '07.18.41',
+      '09.22.36',
+      '15.27.44三中三每组35',
+      '06.14',
+      '21.33',
+      '08.42',
+      '17.39',
+      '25.46',
+      '03.31',
+      '10.28',
+      '05.09 9二中二出50',
+    ].join('\n');
+
+    assert.equal(mergeRecognizedChatTexts([first, second]), first);
+  });
+
+  it('去掉 OCR 轻微识别差异造成的平码中段重叠内容', () => {
+    const first = [
+      '14 27 36/250',
+      '03 08 19 22 41 46 09 31/150',
+      '12 25 33 44 48/100',
+      '澳门彩特码06号18号29号37号',
+      '45号一个号各下30元.',
+      '04号14号24号34号44号一个',
+      '号各下20元',
+      '23 05 17/250',
+      '11 28 39 42 07 16 30 48 02 21 35',
+      '44/150',
+      '09 13 26 31/100',
+      '香港特码38号下300元',
+    ].join('\n');
+    const second = [
+      '45号 一1号合下30元.',
+      '04号14号24号34号44号一个',
+      '号各下20元',
+      '23 05 17/250',
+      '11 28 39 42 07 16 30 48 02 21 35',
+      '44/150',
+      '09 13 26 31/100',
+      '香港特码38号下300元',
+    ].join('\n');
+
+    assert.equal(mergeRecognizedChatTexts([first, second]), first);
+  });
+});
+
+describe('mergeModeTexts', () => {
+  it('追加 OCR 识别结果时去掉输入区里已经存在的重叠内容', () => {
+    const current = {
+      pingma: ['12 35 08/250', '46 03 19 27 41 06 22 14/150'].join('\n'),
+      lianma: '05.09二中二出50',
+      fushi: '',
+    };
+    const addition = {
+      pingma: ['46 03 19 27 41 06 22 14/150', '09 31 44 18 25/100'].join('\n'),
+      lianma: '05.09二中二出50\n复式三中三各20',
+      fushi: '',
+    };
+
+    assert.deepEqual(mergeModeTexts(current, addition), {
+      pingma: ['12 35 08/250', '46 03 19 27 41 06 22 14/150', '09 31 44 18 25/100'].join('\n'),
+      lianma: '05.09二中二出50\n复式三中三各20',
+      fushi: '',
+    });
+  });
 });
 
 describe('classifyRecognizedChatTexts', () => {
+  it('drops chat UI noise before classifying recognized chat text', () => {
+    const result = classifyRecognizedChatTexts([
+      [
+        '1:10 . 654',
+        '1 文件传输助手',
+        '12 35 08/250',
+        '46 03 19 27 41 06 22 14/150',
+        '0',
+      ].join('\n'),
+    ]);
+
+    assert.equal(result.pingma, '12 35 08/250\n46 03 19 27 41 06 22 14/150');
+    assert.equal(result.lianma, '');
+    assert.equal(parseBetGroups(result.pingma, 'pingma').reduce((sum, group) => sum + group.betAmount, 0), 1950);
+  });
+
+  it('normalizes odd compact OCR runs before classifying recognized chat text', () => {
+    const result = classifyRecognizedChatTexts(['4603192 27 41 06 22 14/150']);
+
+    assert.equal(result.pingma, '46 03 19 27 41 06 22 14/150');
+    assert.equal(parseBetGroups(result.pingma, 'pingma').reduce((sum, group) => sum + group.betAmount, 0), 1200);
+  });
+
+  it('normalizes compact OCR runs with one inserted duplicate digit before classifying recognized chat text', () => {
+    const result = classifyRecognizedChatTexts(['46031922741062214/150']);
+
+    assert.equal(result.pingma, '46 03 19 27 41 06 22 14/150');
+    assert.equal(parseBetGroups(result.pingma, 'pingma').reduce((sum, group) => sum + group.betAmount, 0), 1200);
+  });
+
+  it('classifies the dense chat OCR sample without losing compact slash continuation bets', () => {
+    const result = classifyRecognizedChatTexts([
+      [
+        '1235 08/250',
+        '4603192741062214/150',
+        '0931441825/100',
+        '澳门彩特码07号16号28号33号',
+        '45号一个号各下30元,',
+        '04号14号24号34号44号一个',
+        '号各下20元',
+        '234811/250',
+        '0617293240052137441226',
+        '08153049/150',
+        '澳门彩特码10号13号18号22号',
+        '27号31号36号39号42号48号',
+        '一个号各下10元,',
+        '05号15号25号35号45号一个',
+        '号各下100元,',
+        '06号16号26号36号46号一个',
+        '号各下70元',
+        '香港特码38号下300元',
+        '03.12.29',
+        '07.18.41',
+        '09.22.36',
+        '15.27.44三中三每组35',
+        '06.14',
+      ].join('\n'),
+    ]);
+    const summary = calculateAllModeDraftSummary(result);
+
+    assert.equal(summary.totalBetAmount, 7090);
+    assert.equal(parseBetGroups(result.pingma, 'pingma').reduce((sum, group) => sum + group.betAmount, 0), 6950);
+    assert.equal(parseBetGroups(result.lianma, 'lianma').reduce((sum, group) => sum + group.betAmount, 0), 140);
+  });
+
   it('合并多张聊天 OCR 文本时只删除真实重叠内容', () => {
     const result = classifyRecognizedChatTexts([
       '46.47\n4.14\n24.32\n9.10',

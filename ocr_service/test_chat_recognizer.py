@@ -5,6 +5,61 @@ from ocr_service.chat_recognizer import clean_chat_text
 
 
 class CleanChatTextTest(unittest.TestCase):
+    def test_preserves_spaces_between_bet_numbers(self):
+        raw_text = "\n".join(
+            [
+                "12 35 08/250",
+                "46 03 19 27 41 06 22 14/150",
+                "09 31 44 18 25/100",
+            ]
+        )
+
+        self.assertEqual(clean_chat_text(raw_text).splitlines(), raw_text.splitlines())
+
+    def test_restores_spaces_in_compact_ocr_bet_numbers(self):
+        raw_text = "\n".join(
+            [
+                "1235 08/250",
+                "4603192741062214/150",
+                "0931441825/100",
+                "0617293240052137441226",
+                "08153049/150",
+            ]
+        )
+
+        self.assertEqual(
+            clean_chat_text(raw_text).splitlines(),
+            [
+                "12 35 08/250",
+                "46 03 19 27 41 06 22 14/150",
+                "09 31 44 18 25/100",
+                "06 17 29 32 40 05 21 37 44 12 26",
+                "08 15 30 49/150",
+            ],
+        )
+
+    def test_drops_wechat_ui_noise_lines(self):
+        raw_text = "\n".join(
+            [
+                "1:10 . 654",
+                "1 文件传输助手",
+                "123508/250",
+                "0",
+            ]
+        )
+
+        self.assertEqual(clean_chat_text(raw_text).splitlines(), ["12 35 08/250"])
+
+    def test_restores_spaces_when_ocr_duplicates_next_number_prefix(self):
+        raw_text = "4603192 27 41 06 22 14/150"
+
+        self.assertEqual(clean_chat_text(raw_text).splitlines(), ["46 03 19 27 41 06 22 14/150"])
+
+    def test_restores_spaces_when_ocr_inserts_duplicate_digit_inside_compact_run(self):
+        raw_text = "46031922741062214/150"
+
+        self.assertEqual(clean_chat_text(raw_text).splitlines(), ["46 03 19 27 41 06 22 14/150"])
+
     def test_keeps_split_amount_continuation_lines(self):
         raw_text = "\n".join(
             [

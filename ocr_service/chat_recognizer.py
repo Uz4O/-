@@ -44,11 +44,11 @@ def _extract_lines(result: Any) -> list[str]:
             current.append(text)
             current_y = y if current_y is None else (current_y + y) / 2
         else:
-            merged.append("".join(current))
+            merged.append(" ".join(current))
             current = [text]
             current_y = y
     if current:
-        merged.append("".join(current))
+        merged.append(" ".join(current))
     return merged
 
 
@@ -77,6 +77,68 @@ def _is_bet_continuation_line(line: str, previous_line: str) -> bool:
     return False
 
 
+def _is_chat_ui_noise_line(line: str) -> bool:
+    if "文件传输助手" in line:
+        return True
+
+    if re.fullmatch(r"\d{1,2}:\d{2}(?:[.:]\d{1,3})?", line):
+        return True
+
+    if re.fullmatch(r"\d{1,2}:\d{2}[.:]\d{1,3}", re.sub(r"\s+", "", line)):
+        return True
+
+    return False
+
+
+def _normalize_compact_mark_six_numbers(line: str) -> str:
+    def valid_numbers(digits: str) -> list[str]:
+        numbers = [digits[index : index + 2] for index in range(0, len(digits), 2)]
+        return numbers if all(1 <= int(number) <= 49 for number in numbers) else []
+
+    def remove_single_duplicate_digit(digits: str) -> str:
+        candidates = set()
+        for index in range(1, len(digits)):
+            if digits[index] != digits[index - 1]:
+                continue
+            candidate = digits[:index] + digits[index + 1 :]
+            if len(candidate) % 2 == 0 and valid_numbers(candidate):
+                candidates.add(candidate)
+        return next(iter(candidates)) if len(candidates) == 1 else ""
+
+    def expand(match: re.Match[str]) -> str:
+        digits = match.group("digits")
+        next_number = match.group("next")
+        if len(digits) < 4:
+            return match.group(0)
+
+        number_digits = digits
+        separator = ""
+        suffix = ""
+        if len(number_digits) % 2 == 0:
+            separator = match.group("gap") or ""
+            suffix = next_number or ""
+        else:
+            duplicated_digit_fix = remove_single_duplicate_digit(number_digits)
+            if duplicated_digit_fix:
+                number_digits = duplicated_digit_fix
+                separator = match.group("gap") or ""
+                suffix = next_number or ""
+            else:
+                if not next_number or number_digits[-1] != next_number[0]:
+                    return match.group(0)
+                number_digits = number_digits[:-1]
+                separator = match.group("gap")
+                suffix = next_number
+
+        numbers = valid_numbers(number_digits)
+        if not numbers:
+            return match.group(0)
+
+        return " ".join(numbers) + (f"{separator}{suffix}" if suffix else "")
+
+    return re.sub(r"(?P<digits>\d{4,})(?:(?P<gap>[ \t]+)(?P<next>\d{2})(?=\D|$))?", expand, line)
+
+
 def clean_chat_text(text: str) -> str:
     cleaned_lines = []
     previous_kept_line = ""
@@ -87,12 +149,17 @@ def clean_chat_text(text: str) -> str:
             .replace("。", ".")
             .replace("，", ",")
         )
-        normalized = re.sub(r"\s+", "", normalized)
-        if not normalized:
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        compact_line = re.sub(r"\s+", "", normalized)
+        if not compact_line:
             continue
-        if _is_bet_content_line(normalized) or _is_bet_continuation_line(normalized, previous_kept_line):
-            cleaned_lines.append(normalized)
-            previous_kept_line = normalized
+        if _is_chat_ui_noise_line(compact_line) or _is_chat_ui_noise_line(normalized):
+            continue
+        if compact_line == "0" and not _is_bet_continuation_line(compact_line, previous_kept_line):
+            continue
+        if _is_bet_content_line(compact_line) or _is_bet_continuation_line(compact_line, previous_kept_line):
+            cleaned_lines.append(_normalize_compact_mark_six_numbers(normalized))
+            previous_kept_line = compact_line
     return "\n".join(cleaned_lines)
 
 

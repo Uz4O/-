@@ -163,6 +163,39 @@ def _format_bets_as_text(bets: dict[str, str]) -> str:
     return "，".join(parts)
 
 
+def looks_like_chat_screenshot_text(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", text)
+    if not normalized:
+        return False
+
+    signals = 0
+    if "文件传输助手" in normalized:
+        signals += 2
+    if re.search(r"(澳门彩|香港)", normalized):
+        signals += 1
+    if re.search(r"(一个号|各下|各押|各买|每组)", normalized):
+        signals += 1
+    if re.search(r"(三中三|二中二|复式|复试)", normalized):
+        signals += 1
+    if re.search(r"\d{4,}/\d{1,4}", normalized):
+        signals += 1
+    if len(re.findall(r"\d{1,2}[.]\d{1,2}", normalized)) >= 2:
+        signals += 1
+
+    return signals >= 2
+
+
+def _empty_chat_screenshot_result() -> dict[str, Any]:
+    return {
+        "ok": True,
+        "bets": {},
+        "text": "",
+        "confidence": {},
+        "lowConfidence": [],
+        "detectedType": "chat",
+    }
+
+
 def _recognize_full_table(image: np.ndarray) -> tuple[dict[str, str], dict[str, float]]:
     engine = get_table_ocr_engine()
     result = engine(image)
@@ -188,6 +221,11 @@ def _recognize_full_table(image: np.ndarray) -> tuple[dict[str, str], dict[str, 
 
 
 def recognize_table(image: np.ndarray) -> dict[str, Any]:
+    chat_probe_result = get_ocr_engine()(image)
+    chat_probe_text = "\n".join(text for text, _score in _extract_text_items(chat_probe_result))
+    if looks_like_chat_screenshot_text(chat_probe_text):
+        return _empty_chat_screenshot_result()
+
     bets, confidence = _recognize_full_table(image)
     verify_engine = get_ocr_engine()
     low_confidence: list[dict[str, Any]] = []

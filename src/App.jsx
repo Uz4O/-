@@ -27,8 +27,8 @@ import {
   getZodiacByNumber,
   initialModeTexts,
   initialSummary,
-  joinBetText,
   normalizeMarkSixNumber,
+  mergeModeTexts,
 } from './lib/lottery.js';
 import { buildLicenseHeaders, createBrowserId, toGeneratedCodeRows } from './lib/licenseClient.js';
 
@@ -709,11 +709,7 @@ function WorkbenchApp() {
   }
 
   function appendModeTexts(nextTexts) {
-    const mergedTexts = {
-      pingma: joinBetText(modeTexts.pingma, nextTexts.pingma),
-      lianma: joinBetText(modeTexts.lianma, nextTexts.lianma),
-      fushi: joinBetText(modeTexts.fushi, nextTexts.fushi),
-    };
+    const mergedTexts = mergeModeTexts(modeTexts, nextTexts);
 
     setModeTexts(mergedTexts);
     return mergedTexts;
@@ -950,6 +946,7 @@ function WorkbenchApp() {
     try {
       const recognizedTexts = [];
       let detectedCount = 0;
+      let chatScreenshotCount = 0;
 
       for (const [index, source] of sources.entries()) {
         const currentIndex = index + 1;
@@ -972,6 +969,10 @@ function WorkbenchApp() {
         }
 
         const bets = payload.bets || {};
+        if (payload.detectedType === 'chat') {
+          chatScreenshotCount += 1;
+          continue;
+        }
         const formattedText = typeof payload.text === 'string' && payload.text.trim()
           ? payload.text.trim()
           : formatTableBetsAsBetText(bets);
@@ -985,6 +986,10 @@ function WorkbenchApp() {
       const combinedText = recognizedTexts.join('\n');
       if (!combinedText) {
         setRecognitionProgress(0);
+        if (chatScreenshotCount) {
+          setStatusText('检测到聊天截图，请点击“识别文字”提取投注内容，表格识别已避免生成错误金额');
+          return;
+        }
         setStatusText('OCR 没有识别到表格金额，请换更清晰图片或手动填写');
         return;
       }
