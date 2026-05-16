@@ -25,6 +25,7 @@ import {
   formatMoney,
   formatTableBetsAsBetText,
   getZodiacByNumber,
+  getPreferredBetMode,
   initialModeTexts,
   initialSummary,
   normalizeMarkSixNumber,
@@ -1065,7 +1066,7 @@ function WorkbenchApp() {
         .map(([mode, text]) => `${betModes.find((item) => item.id === mode)?.label || mode}${text.split(/\r?\n/).filter(Boolean).length}行`);
 
       const nextModeTexts = appendModeTexts(classifiedTexts);
-      setBetMode(classifiedTexts.fushi.trim() ? 'fushi' : classifiedTexts.lianma.trim() ? 'lianma' : 'pingma');
+      setBetMode(getPreferredBetMode(classifiedTexts));
       setRecognitionProgress(100);
       generateFromModeTexts(
         nextModeTexts,

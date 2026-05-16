@@ -224,6 +224,7 @@ OCR/FastAPI：
 - SSH 用户名：`root`
 - SSH 端口：`22`
 - 登录方式：私钥
+- 本机私钥路径：`C:\Users\May\.ssh\mark_six_deploy`（只记录路径，不要把私钥内容写入仓库）
 - 服务器项目目录：`/opt/mark-six`
 - PM2 应用名：
   - `mark-six-api`

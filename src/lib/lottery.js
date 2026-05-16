@@ -999,6 +999,23 @@ function findFuzzyContainedPrefixOverlap(leftLines, rightLines) {
   return best;
 }
 
+function findOverlapBeforeClippedTail(leftLines, rightLines) {
+  let best = { count: 0, charLength: 0, score: 0, replaceTailCount: 0 };
+  const maxTailCount = Math.min(3, Math.max(0, leftLines.length - 1));
+
+  for (let tailCount = 1; tailCount <= maxTailCount; tailCount += 1) {
+    const candidate = findFuzzyContainedPrefixOverlap(leftLines.slice(0, -tailCount), rightLines);
+    if (!isStrongChatOverlap(candidate)) continue;
+
+    const score = candidate.score + tailCount;
+    if (score > best.score) {
+      best = { ...candidate, score, replaceTailCount: tailCount };
+    }
+  }
+
+  return best;
+}
+
 function mergeRecognizedChatTexts(texts) {
   const nodes = texts
     .map((text) => ({ lines: splitRecognizedChatLines(text) }))
@@ -1009,10 +1026,14 @@ function mergeRecognizedChatTexts(texts) {
     const suffixOverlap = findSuffixPrefixOverlap(mergedLines, node.lines);
     const containedOverlap = findContainedPrefixOverlap(mergedLines, node.lines);
     const fuzzyContainedOverlap = findFuzzyContainedPrefixOverlap(mergedLines, node.lines);
-    const overlap = [suffixOverlap, containedOverlap, fuzzyContainedOverlap].reduce((best, current) =>
+    const clippedTailOverlap = findOverlapBeforeClippedTail(mergedLines, node.lines);
+    const overlap = [suffixOverlap, containedOverlap, fuzzyContainedOverlap, clippedTailOverlap].reduce((best, current) =>
       current.score > best.score ? current : best,
     );
     const duplicateLineCount = isStrongChatOverlap(overlap) ? overlap.count : 0;
+    if (duplicateLineCount && overlap.replaceTailCount) {
+      mergedLines.splice(-overlap.replaceTailCount);
+    }
     mergedLines.push(...node.lines.slice(duplicateLineCount));
   });
 
@@ -1029,6 +1050,17 @@ function mergeModeTexts(currentTexts, nextTexts) {
     lianma: mergeRecognizedChatTexts([currentTexts?.lianma, nextTexts?.lianma]),
     fushi: mergeRecognizedChatTexts([currentTexts?.fushi, nextTexts?.fushi]),
   };
+}
+
+function getPreferredBetMode(modeTexts) {
+  return betModes
+    .map((mode, index) => ({
+      id: mode.id,
+      index,
+      lineCount: splitRecognizedChatLines(modeTexts?.[mode.id] || '').length,
+    }))
+    .filter((mode) => mode.lineCount > 0)
+    .sort((left, right) => right.lineCount - left.lineCount || left.index - right.index)[0]?.id || 'pingma';
 }
 
 function classifyBetText(rawText) {
@@ -1223,6 +1255,7 @@ export {
   formatMoney,
   formatTableBetsAsBetText,
   getEmptyStatusText,
+  getPreferredBetMode,
   getZodiacByNumber,
   initialModeTexts,
   initialSummary,

@@ -8,6 +8,7 @@ import {
   calculateLotteryResult,
   classifyBetText,
   classifyRecognizedChatTexts,
+  getPreferredBetMode,
   mergeModeTexts,
   mergeRecognizedChatTexts,
   parseBetGroups,
@@ -728,6 +729,60 @@ describe('mergeRecognizedChatTexts', () => {
 
     assert.equal(mergeRecognizedChatTexts([first, second]), first);
   });
+
+  it('用下一张完整内容替换上一张被输入栏截断的底部连码内容', () => {
+    const first = [
+      '06.18.29',
+      '12.25.44',
+      '03.17.39',
+      '08.21.46三中三每组40',
+      '09.14',
+      '27.33',
+      '05.42',
+      '16.38',
+      '22.49二中二出60',
+      '01.13.24',
+      '07.10 21',
+    ].join('\n');
+    const second = [
+      '06.18.29',
+      '12.25.44',
+      '03.17.39',
+      '08.21.46三中三每组40',
+      '09.14',
+      '27.33',
+      '05.42',
+      '16.38',
+      '22.49二中二出60',
+      '01.13.24',
+      '07.19.31',
+      '11.28.45三中三每组30',
+      '02.15',
+      '06.34',
+      '18.47二中二出80',
+    ].join('\n');
+
+    assert.equal(
+      mergeRecognizedChatTexts([first, second]),
+      [
+        '06.18.29',
+        '12.25.44',
+        '03.17.39',
+        '08.21.46三中三每组40',
+        '09.14',
+        '27.33',
+        '05.42',
+        '16.38',
+        '22.49二中二出60',
+        '01.13.24',
+        '07.19.31',
+        '11.28.45三中三每组30',
+        '02.15',
+        '06.34',
+        '18.47二中二出80',
+      ].join('\n'),
+    );
+  });
 });
 
 describe('mergeModeTexts', () => {
@@ -748,6 +803,19 @@ describe('mergeModeTexts', () => {
       lianma: '05.09二中二出50\n复式三中三各20',
       fushi: '',
     });
+  });
+});
+
+describe('getPreferredBetMode', () => {
+  it('识别结果包含多个模式时优先展示行数最多的模式', () => {
+    assert.equal(
+      getPreferredBetMode({
+        pingma: '15 24 39/250\n08 21 37 44/100',
+        lianma: '04.17.32\n09.26.41\n13.28.45\n06.22.39三中三每组35',
+        fushi: '复式三中三各20\n05.16.23.31.38.49',
+      }),
+      'lianma',
+    );
   });
 });
 
