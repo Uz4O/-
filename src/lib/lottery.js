@@ -484,6 +484,7 @@ function parseFushiBetBlocks(rawText) {
 }
 
 function normalizeComboType(value) {
+  if (/特碰/.test(value)) return '特碰';
   if (/复四三/.test(value)) return '复四三';
   if (/二中[二三]/.test(value)) return value.match(/二中[二三]/)?.[0] || '';
   if (/三中三/.test(value)) return '三中三';
@@ -492,6 +493,7 @@ function normalizeComboType(value) {
 
 function getComboMeta(comboType) {
   if (comboType === '二中二') return { pickCount: 2, odds: 65 };
+  if (comboType === '特碰') return { pickCount: 2, odds: 65 };
   if (comboType === '三中三') return { pickCount: 3, odds: 200 };
   if (comboType === '复四三') return { pickCount: 3, odds: 200 };
   return null;

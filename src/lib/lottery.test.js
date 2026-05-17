@@ -252,6 +252,18 @@ describe('parseBetGroups', () => {
     assert.equal(groups[0].betAmount, 700);
   });
 
+  it('按二中二口径解析复式特碰任意两两组合', () => {
+    const groups = parseBetGroups('21-47-32--13-42复式特碰每组100', 'fushi');
+
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0].betMode, 'fushi');
+    assert.equal(groups[0].comboType, '特碰');
+    assert.deepEqual(groups[0].numbers, ['21', '47', '32', '13', '42']);
+    assert.equal(groups[0].pickCount, 2);
+    assert.equal(groups[0].comboCount, 10);
+    assert.equal(groups[0].betAmount, 1000);
+  });
+
   it('未配置赔率的二中三不参与计算，避免错误赔付', () => {
     const groups = parseBetGroups('复试二中三各20\n23.22.27.06', 'fushi');
 
@@ -317,6 +329,21 @@ describe('calculateLotteryResult', () => {
 
     assert.equal(result.summary.totalBetAmount, 120);
     assert.equal(result.summary.totalWinAmount, 1300);
+    assert.match(result.winners[0].hitContent, /命中2码\/1组/);
+  });
+
+  it('复式特碰中奖计算沿用二中二赔率和组合命中数', () => {
+    const result = calculateLotteryResult({
+      betMode: 'fushi',
+      rawText: '21-47-32--13-42复式特碰每组100',
+      drawNumber: '21',
+      extraDrawNumbers: '47.01.02.03.04',
+      drawZodiac: '鸡',
+    });
+
+    assert.equal(result.summary.totalBetAmount, 1000);
+    assert.equal(result.summary.totalWinAmount, 6500);
+    assert.match(result.winners[0].hitContent, /复式特碰/);
     assert.match(result.winners[0].hitContent, /命中2码\/1组/);
   });
 
@@ -535,6 +562,14 @@ describe('classifyBetText', () => {
 
     assert.equal(result.fushi, '牛鸡兔龙复四三各五十');
     assert.equal(result.pingma, '狗20');
+  });
+
+  it('把复式特碰口头写法归类到复式', () => {
+    const result = classifyBetText('21-47-32--13-42复式特碰每组100');
+
+    assert.equal(result.fushi, '21-47-32--13-42复式特碰每组100');
+    assert.equal(result.pingma, '');
+    assert.equal(result.lianma, '');
   });
 });
 
