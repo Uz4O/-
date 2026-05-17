@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import express from 'express';
 
+import { assistBetParsing } from './deepseekBetAssistant.js';
 import {
   activateLicenseCard,
   createEmptyLicenseStore,
@@ -50,7 +51,7 @@ function jsonError(res, status, error, extra = {}) {
   res.status(status).json({ ok: false, error, ...extra });
 }
 
-export function createApp({ env = process.env } = {}) {
+export function createApp({ env = process.env, deepseekFetch = fetch } = {}) {
   const app = express();
   const port = Number(env.PORT || 8787);
   const ocrServiceUrl = env.OCR_SERVICE_URL || `http://127.0.0.1:${env.OCR_PORT || 8791}`;
@@ -611,6 +612,22 @@ export function createApp({ env = process.env } = {}) {
       res.json(payload);
     } catch (error) {
       jsonError(res, 503, error instanceof Error ? error.message : 'OCR 聊天识别失败');
+    }
+  });
+
+  app.post('/api/assist-bet-parsing', requireLicenseSession, limitOcrRequests, async (req, res) => {
+    try {
+      const sourceTexts = Array.isArray(req.body?.sourceTexts) ? req.body.sourceTexts : [];
+      const modeTexts = req.body?.modeTexts && typeof req.body.modeTexts === 'object' ? req.body.modeTexts : {};
+      const payload = await assistBetParsing({
+        env,
+        fetchImpl: deepseekFetch,
+        sourceTexts,
+        modeTexts,
+      });
+      res.json(payload);
+    } catch (error) {
+      jsonError(res, 503, error instanceof Error ? error.message : 'AI 辅助解析失败');
     }
   });
 

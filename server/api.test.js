@@ -175,3 +175,189 @@ describe('license api', () => {
     assert.equal(list.body.cards[0].hasStoredCode, true);
   });
 });
+
+describe('AI assisted bet parsing api', () => {
+  beforeEach(async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'mark-six-ai-'));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { force: true, recursive: true });
+  });
+
+  async function createLicensedHeaders(env = {}, deepseekFetch) {
+    app = createApp({
+      env: {
+        ADMIN_PASSWORD: 'admin-pass',
+        LICENSE_SECRET: 'license-secret',
+        LICENSE_DATA_FILE: path.join(tempDir, 'license-cards.json'),
+        LOTTERY_SYNC_DISABLED: '1',
+        ...env,
+      },
+      deepseekFetch,
+    });
+
+    const login = await request('POST', '/api/admin/login', {
+      body: { password: 'admin-pass' },
+    });
+    const cookie = login.response.headers.get('set-cookie');
+    const generated = await request('POST', '/api/admin/cards/generate', {
+      headers: { cookie },
+      body: { count: 1, durationDays: 7 },
+    });
+    const activated = await request('POST', '/api/license/activate', {
+      body: { code: generated.body.plainCodes[0], browserId: 'browser-ai' },
+    });
+
+    return {
+      'x-license-card-id': activated.body.card.id,
+      'x-license-browser-id': 'browser-ai',
+    };
+  }
+
+  it('requires a license session for AI assisted parsing', async () => {
+    app = createApp({
+      env: {
+        ADMIN_PASSWORD: 'admin-pass',
+        LICENSE_SECRET: 'license-secret',
+        LICENSE_DATA_FILE: path.join(tempDir, 'license-cards.json'),
+        LOTTERY_SYNC_DISABLED: '1',
+        DEEPSEEK_API_KEY: 'test-key',
+      },
+    });
+
+    const result = await request('POST', '/api/assist-bet-parsing', {
+      body: { sourceTexts: ['平特一肖牛买1200'], modeTexts: {} },
+    });
+
+    assert.equal(result.response.status, 401);
+    assert.equal(result.body.reason, 'missing_session');
+  });
+
+  it('returns a clear error when DeepSeek is not configured', async () => {
+    const headers = await createLicensedHeaders();
+
+    const result = await request('POST', '/api/assist-bet-parsing', {
+      headers,
+      body: { sourceTexts: ['平特一肖牛买1200'], modeTexts: {} },
+    });
+
+    assert.equal(result.response.status, 503);
+    assert.match(result.body.error, /DEEPSEEK_API_KEY/);
+  });
+
+  it('returns validated candidates from deepseek-v4-flash', async () => {
+    const calls = [];
+    const deepseekFetch = async (url, options) => {
+      calls.push({ url, body: JSON.parse(options.body) });
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  items: [
+                    {
+                      sourceText: '平特一肖牛买1200',
+                      candidates: [
+                        {
+                          mode: 'pingma',
+                          normalizedText: '平特一肖牛买1200',
+                          reason: '平特一肖生肖金额',
+                          confidence: 0.94,
+                        },
+                      ],
+                    },
+                  ],
+                }),
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    };
+    const headers = await createLicensedHeaders({ DEEPSEEK_API_KEY: 'test-key' }, deepseekFetch);
+
+    const result = await request('POST', '/api/assist-bet-parsing', {
+      headers,
+      body: { sourceTexts: ['平特一肖牛买1200'], modeTexts: {} },
+    });
+
+    assert.equal(result.response.status, 200);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].body.model, 'deepseek-v4-flash');
+    assert.equal(result.body.items[0].status, 'needs_confirm');
+    assert.equal(result.body.items[0].candidates[0].formula, '1项 × 1200 = 1200');
+  });
+
+  it('falls back to deepseek-v4-pro when flash asks for help', async () => {
+    const models = [];
+    const deepseekFetch = async (_url, options) => {
+      const body = JSON.parse(options.body);
+      models.push(body.model);
+      const payload =
+        body.model === 'deepseek-v4-flash'
+          ? {
+              items: [
+                {
+                  sourceText: '鸡马虎龙猴蛇，一个号20',
+                  needsPro: true,
+                  candidates: [],
+                },
+              ],
+            }
+          : {
+              items: [
+                {
+                  sourceText: '鸡马虎龙猴蛇，一个号20',
+                  candidates: [
+                    {
+                      mode: 'zodiacFushi',
+                      normalizedText: '鸡马虎龙猴蛇\n一个号20',
+                      reason: '生肖复式三中三',
+                      confidence: 0.91,
+                    },
+                  ],
+                },
+              ],
+            };
+
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: JSON.stringify(payload) } }],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    };
+    const headers = await createLicensedHeaders({ DEEPSEEK_API_KEY: 'test-key' }, deepseekFetch);
+
+    const result = await request('POST', '/api/assist-bet-parsing', {
+      headers,
+      body: { sourceTexts: ['鸡马虎龙猴蛇，一个号20'], modeTexts: {} },
+    });
+
+    assert.deepEqual(models, ['deepseek-v4-flash', 'deepseek-v4-pro']);
+    assert.equal(result.response.status, 200);
+    assert.equal(result.body.items[0].candidates[0].modelUsed, 'deepseek-v4-pro');
+  });
+
+  it('does not return trusted candidates when DeepSeek returns invalid JSON', async () => {
+    const deepseekFetch = async () =>
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: 'not json' } }],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    const headers = await createLicensedHeaders({ DEEPSEEK_API_KEY: 'test-key' }, deepseekFetch);
+
+    const result = await request('POST', '/api/assist-bet-parsing', {
+      headers,
+      body: { sourceTexts: ['平特一肖牛买1200'], modeTexts: {} },
+    });
+
+    assert.equal(result.response.status, 503);
+    assert.match(result.body.error, /JSON/);
+  });
+});

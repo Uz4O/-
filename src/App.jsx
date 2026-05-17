@@ -12,6 +12,7 @@ import {
   RefreshCw,
   RotateCcw,
   ScanText,
+  Sparkles,
   ShieldCheck,
   UploadCloud,
 } from 'lucide-react';
@@ -22,12 +23,15 @@ import {
   calculateAllModeDraftSummary,
   calculateAllModeLotteryResult,
   classifyRecognizedChatTexts,
+  createAiAssistantModeTexts,
+  createAutoParseDraft,
   formatMoney,
   formatTableBetsAsBetText,
   getZodiacByNumber,
   getPreferredBetMode,
   initialModeTexts,
   initialSummary,
+  joinBetText,
   normalizeMarkSixNumber,
   mergeModeTexts,
 } from './lib/lottery.js';
@@ -195,6 +199,22 @@ function formatLicenseDate(value) {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+function countAiIssueStatuses(items) {
+  return items.reduce(
+    (counts, item) => ({
+      ...counts,
+      [item.status]: (counts[item.status] || 0) + 1,
+    }),
+    { needs_confirm: 0, needs_mode: 0, unresolved: 0 },
+  );
+}
+
+function getAiIssueStatusLabel(status) {
+  if (status === 'needs_confirm') return '待确认';
+  if (status === 'needs_mode') return '待选择';
+  return '无法解析';
 }
 
 function getLicenseDaysLeft(card) {
@@ -663,6 +683,8 @@ function AdminCardsPage() {
 function WorkbenchApp() {
   const [betMode, setBetMode] = useState('pingma');
   const [modeTexts, setModeTexts] = useState(initialModeTexts);
+  const [manualBetText, setManualBetText] = useState('');
+  const [workbenchStep, setWorkbenchStep] = useState('input');
   const [screenshots, setScreenshots] = useState([]);
   const [hasSelectedFiles, setHasSelectedFiles] = useState(false);
   const [drawNumber, setDrawNumber] = useState('');
@@ -678,6 +700,12 @@ function WorkbenchApp() {
   const [isDragging, setIsDragging] = useState(false);
   const [isRecognizing, setIsRecognizing] = useState(false);
   const [recognitionProgress, setRecognitionProgress] = useState(0);
+  const [aiSourceTexts, setAiSourceTexts] = useState([]);
+  const [aiIssues, setAiIssues] = useState([]);
+  const [isAiAssisting, setIsAiAssisting] = useState(false);
+  const [aiAssistStatus, setAiAssistStatus] = useState('等待 OCR 原文或输入框文本');
+  const [workflowStatus, setWorkflowStatus] = useState('等待输入投注信息或上传聊天截图');
+  const [workflowProgress, setWorkflowProgress] = useState(0);
   const [copyState, setCopyState] = useState('复制汇报');
   const [hasGenerated, setHasGenerated] = useState(false);
   const screenshotsRef = useRef([]);
@@ -699,14 +727,17 @@ function WorkbenchApp() {
   const uploadedPhotoCount = screenshots.length || selectedFilesRef.current.length;
   const recognitionDone = recognitionProgress === 100 && !isRecognizing;
   const activeBetMode = betModes.find((mode) => mode.id === betMode) || betModes[0];
-  const rawText = modeTexts[betMode] || '';
+  const rawText = manualBetText;
   const draftSummary = useMemo(() => calculateAllModeDraftSummary(modeTexts), [modeTexts]);
+  const aiIssueCounts = useMemo(() => countAiIssueStatuses(aiIssues), [aiIssues]);
+  const pendingAiIssues = aiIssues.filter((issue) => !issue.ignored);
+  const canRequestAiAssist =
+    !isAiAssisting &&
+    (aiSourceTexts.some((text) => text.trim()) || Object.values(modeTexts).some((text) => text.trim()));
+  const isWorkflowBusy = isRecognizing || isAiAssisting;
 
   function updateActiveModeText(value) {
-    setModeTexts((current) => ({
-      ...current,
-      [betMode]: value,
-    }));
+    setManualBetText(value);
   }
 
   function appendModeTexts(nextTexts) {
@@ -738,6 +769,155 @@ function WorkbenchApp() {
     setCopyState('复制汇报');
     setHasGenerated(true);
     setStatusText(`${successText}，已自动生成计算结果`);
+  }
+
+  async function runAiReviewForDraft({ draftModeTexts, sourceTexts = [], successText }) {
+    setModeTexts(draftModeTexts);
+    setAiSourceTexts(sourceTexts);
+    setRecognitionProgress(100);
+    setWorkflowProgress(72);
+    setWorkflowStatus('本地分类完成，正在检查是否需要 AI 格式化');
+
+    const hasAiSources = sourceTexts.some((text) => text.trim());
+    if (!hasAiSources) {
+      setAiIssues([]);
+      setAiAssistStatus('没有发现需要 AI 处理的异常项');
+      setWorkflowProgress(100);
+      setWorkflowStatus(`${successText}，未发现异常，已进入结果页`);
+      setWorkbenchStep('result');
+      generateFromModeTexts(draftModeTexts, successText);
+      return;
+    }
+
+    setIsAiAssisting(true);
+    setAiAssistStatus('正在自动调用 AI 格式化异常文本');
+    setWorkflowProgress(82);
+    setWorkflowStatus('正在使用 AI 格式化本地规则无法解析的文本');
+    try {
+      const { response, payload } = await fetchJson('/api/assist-bet-parsing', {
+        method: 'POST',
+        body: JSON.stringify({
+          sourceTexts,
+          modeTexts: draftModeTexts,
+        }),
+      });
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'AI 辅助解析失败');
+
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      setAiIssues(items);
+      const counts = countAiIssueStatuses(items);
+      setAiAssistStatus(
+        items.length
+          ? `AI 返回 ${items.length} 条异常项：待确认 ${counts.needs_confirm}，待选择 ${counts.needs_mode}，无法解析 ${counts.unresolved}`
+          : 'AI 没有发现需要处理的异常项',
+      );
+      setWorkflowProgress(100);
+
+      if (!items.length) {
+        setWorkflowStatus(`${successText}，AI 未发现异常，已进入结果页`);
+        setWorkbenchStep('result');
+        generateFromModeTexts(draftModeTexts, successText);
+        return;
+      }
+
+      setWorkflowStatus('AI 处理完成，请确认异常项后进入结果页');
+      setWorkbenchStep('review');
+    } catch (error) {
+      const fallbackIssue = {
+        id: 'ai-error-1',
+        sourceText: sourceTexts.join('\n'),
+        status: 'unresolved',
+        message: error instanceof Error ? error.message : 'AI 辅助解析失败',
+        candidates: [],
+      };
+      setAiIssues([fallbackIssue]);
+      setAiAssistStatus(fallbackIssue.message);
+      setWorkflowProgress(100);
+      setWorkflowStatus('AI 处理失败，可忽略异常项后继续');
+      setWorkbenchStep('review');
+    } finally {
+      setIsAiAssisting(false);
+    }
+  }
+
+  async function handleParseManualBetText() {
+    if (!manualBetText.trim() || isWorkflowBusy) {
+      setWorkflowStatus('请先输入投注文本');
+      return;
+    }
+
+    setRecognitionProgress(0);
+    setWorkflowProgress(28);
+    setWorkflowStatus('正在本地自动分类手动输入文本');
+    const draft = createAutoParseDraft(manualBetText);
+    await runAiReviewForDraft({
+      draftModeTexts: draft.modeTexts,
+      sourceTexts: draft.aiSourceTexts,
+      successText: '手动投注文本已完成自动分类',
+    });
+  }
+
+  async function handleAssistBetParsing() {
+    if (!canRequestAiAssist) return;
+
+    setIsAiAssisting(true);
+    setAiAssistStatus('正在调用 AI 辅助解析异常文本');
+    try {
+      const { response, payload } = await fetchJson('/api/assist-bet-parsing', {
+        method: 'POST',
+        body: JSON.stringify({
+          sourceTexts: aiSourceTexts,
+          modeTexts,
+        }),
+      });
+      if (!response.ok || !payload.ok) throw new Error(payload.error || 'AI 辅助解析失败');
+
+      const items = Array.isArray(payload.items) ? payload.items : [];
+      setAiIssues(items);
+      const counts = countAiIssueStatuses(items);
+      setAiAssistStatus(
+        items.length
+          ? `AI 返回 ${items.length} 条异常项：待确认 ${counts.needs_confirm}，待选择 ${counts.needs_mode}，无法解析 ${counts.unresolved}`
+          : 'AI 没有发现需要处理的异常项',
+      );
+    } catch (error) {
+      setAiIssues([]);
+      setAiAssistStatus(error instanceof Error ? error.message : 'AI 辅助解析失败');
+    } finally {
+      setIsAiAssisting(false);
+    }
+  }
+
+  function handleConfirmAiCandidate(issueId, candidate) {
+    const candidateText = candidate?.normalizedText || candidate?.candidate?.normalizedText || '';
+    const candidateMode = candidate?.mode || candidate?.candidate?.mode || '';
+    const nextModeTexts = appendModeTexts(
+      createAiAssistantModeTexts({
+        ...candidate,
+        mode: candidateMode,
+        normalizedText: candidateText,
+      }),
+    );
+    setBetMode(candidateMode || betMode);
+    setAiIssues((current) => current.filter((item) => item.id !== issueId));
+    setWorkflowStatus('AI 候选已确认并追加，继续处理剩余异常项');
+    generateFromModeTexts(nextModeTexts, 'AI 候选已确认并追加到输入区');
+  }
+
+  function handleIgnoreAiIssue(issueId) {
+    setAiIssues((current) => current.filter((item) => item.id !== issueId));
+    setWorkflowStatus('已忽略该异常项，忽略内容不会计入金额');
+  }
+
+  function handleContinueToResult() {
+    setWorkbenchStep('result');
+    setWorkflowStatus('已进入结果页，忽略项不会计入金额');
+    generateFromModeTexts(modeTexts, '异常确认已完成');
+  }
+
+  function handleBackToInput() {
+    setWorkbenchStep('input');
+    setWorkflowStatus('可继续补充投注信息或上传截图');
   }
 
   const uploadHint = useMemo(() => {
@@ -934,7 +1114,7 @@ function WorkbenchApp() {
 
   async function handleRecognizeUploadedTables() {
     const sources = getRecognitionSources();
-    if (isRecognizing) return;
+    if (isWorkflowBusy) return;
     if (!sources.length) {
       setStatusText('请先上传表格截图后再识别');
       return;
@@ -942,7 +1122,9 @@ function WorkbenchApp() {
 
     setIsRecognizing(true);
     setRecognitionProgress(12);
+    setWorkflowProgress(12);
     setStatusText(`正在提交 ${sources.length} 张图片进行 OCR 表格识别`);
+    setWorkflowStatus(`正在提交 ${sources.length} 张图片进行 OCR 表格识别`);
 
     try {
       const recognizedTexts = [];
@@ -957,7 +1139,9 @@ function WorkbenchApp() {
           : 100;
 
         setRecognitionProgress(Math.round(16 + (index / sources.length) * 66));
+        setWorkflowProgress(Math.round(16 + (index / sources.length) * 66));
         setStatusText(`正在识别第 ${currentIndex}/${sources.length} 张表格，图片已压缩到原大小 ${compressRatio}%`);
+        setWorkflowStatus(`表格 OCR 正在识别第 ${currentIndex}/${sources.length} 张，图片已压缩到原大小 ${compressRatio}%`);
 
         const response = await postRecognitionRequest('/api/recognize-table', {
           imageBase64: compressedImage.imageBase64,
@@ -998,9 +1182,14 @@ function WorkbenchApp() {
       const nextModeTexts = appendModeTexts({ ...initialModeTexts, pingma: combinedText });
       setBetMode('pingma');
       setRecognitionProgress(100);
+      setWorkflowProgress(100);
+      setWorkflowStatus('表格 OCR 完成，已保持现有表格识别流程并进入结果页');
+      setWorkbenchStep('result');
       generateFromModeTexts(nextModeTexts, `OCR 已识别 ${sources.length} 张图片、${detectedCount} 个号码金额，已追加到输入区`);
     } catch (error) {
       setRecognitionProgress(0);
+      setWorkflowProgress(0);
+      setWorkflowStatus(`OCR 识别表格失败：${error instanceof Error ? error.message : '未知错误'}`);
       setStatusText(`OCR 识别表格失败：${error instanceof Error ? error.message : '未知错误'}`);
     } finally {
       setIsRecognizing(false);
@@ -1009,7 +1198,7 @@ function WorkbenchApp() {
 
   async function handleRecognizeUploadedChats() {
     const sources = getRecognitionSources();
-    if (isRecognizing) return;
+    if (isWorkflowBusy) return;
     if (!sources.length) {
       setStatusText('请先上传聊天截图后再识别');
       return;
@@ -1017,7 +1206,9 @@ function WorkbenchApp() {
 
     setIsRecognizing(true);
     setRecognitionProgress(12);
+    setWorkflowProgress(12);
     setStatusText(`正在提交 ${sources.length} 张图片进行 OCR 文字识别`);
+    setWorkflowStatus(`正在提交 ${sources.length} 张图片进行 OCR 文字识别`);
 
     try {
       const recognizedTexts = [];
@@ -1037,7 +1228,10 @@ function WorkbenchApp() {
           : 100;
 
         setRecognitionProgress(Math.round(16 + (index / sources.length) * 66));
+        const nextProgress = Math.round(16 + (index / sources.length) * 52);
+        setWorkflowProgress(nextProgress);
         setStatusText(`正在识别第 ${currentIndex}/${sources.length} 张聊天图，图片已压缩到原大小 ${compressRatio}%`);
+        setWorkflowStatus(`OCR 正在识别第 ${currentIndex}/${sources.length} 张聊天图，图片已压缩到原大小 ${compressRatio}%`);
 
         const response = await postRecognitionRequest('/api/recognize-chat', {
           imageBase64: compressedImage.imageBase64,
@@ -1065,15 +1259,20 @@ function WorkbenchApp() {
         .filter(([, text]) => text.trim())
         .map(([mode, text]) => `${betModes.find((item) => item.id === mode)?.label || mode}${text.split(/\r?\n/).filter(Boolean).length}行`);
 
-      const nextModeTexts = appendModeTexts(classifiedTexts);
+      setWorkflowProgress(68);
+      setWorkflowStatus('OCR 已返回，正在本地分类并准备 AI 格式化');
+      const autoDraft = createAutoParseDraft(recognizedTexts.join('\n'), classifiedTexts);
+      const nextModeTexts = mergeModeTexts(modeTextsRef.current, classifiedTexts);
       setBetMode(getPreferredBetMode(classifiedTexts));
-      setRecognitionProgress(100);
-      generateFromModeTexts(
-        nextModeTexts,
-        `OCR 已分类 ${sources.length} 张图片：${counts.length ? counts.join('，') : '未分类到有效内容'}`,
-      );
+      await runAiReviewForDraft({
+        draftModeTexts: nextModeTexts,
+        sourceTexts: autoDraft.aiSourceTexts,
+        successText: `OCR 已分类 ${sources.length} 张图片：${counts.length ? counts.join('，') : '未分类到有效内容'}`,
+      });
     } catch (error) {
       setRecognitionProgress(0);
+      setWorkflowProgress(0);
+      setWorkflowStatus(`OCR 识别文字失败：${error instanceof Error ? error.message : '未知错误'}`);
       setStatusText(`OCR 识别文字失败：${error instanceof Error ? error.message : '未知错误'}`);
     } finally {
       setIsRecognizing(false);
@@ -1107,13 +1306,13 @@ function WorkbenchApp() {
   }
 
   function handleClearRawText() {
-    setModeTexts((current) => ({
-      ...current,
-      [betMode]: '',
-    }));
+    setManualBetText('');
     setRecognitionProgress(0);
+    setWorkflowProgress(0);
     setSummary(initialSummary);
     setWinners([]);
+    setAiIssues([]);
+    setWorkflowStatus('已清除手动输入信息');
     setStatusText('已清除填入信息');
     setCopyState('复制汇报');
     setHasGenerated(false);
@@ -1121,11 +1320,18 @@ function WorkbenchApp() {
 
   function handleReset() {
     setModeTexts(initialModeTexts);
+    setManualBetText('');
+    setWorkbenchStep('input');
     setScreenshots([]);
     setHasSelectedFiles(false);
     selectedFilesRef.current = [];
     setUploadDebugText('未选择图片');
     setRecognitionProgress(0);
+    setWorkflowProgress(0);
+    setAiSourceTexts([]);
+    setAiIssues([]);
+    setAiAssistStatus('等待 OCR 原文或输入框文本');
+    setWorkflowStatus('等待输入投注信息或上传聊天截图');
     setDrawNumber('');
     setExtraDrawNumbers('');
     setDrawZodiac('');
@@ -1150,38 +1356,31 @@ function WorkbenchApp() {
         </div>
       </header>
 
-      <section className="panel quick-summary top-summary">
-        <p className="section-label">金额汇总</p>
-        <div className="metric">
-          <span>已录入投注金额</span>
-          <strong>{formatMoney(draftSummary.totalBetAmount)}</strong>
+      <section className="stepper" aria-label="处理进度">
+        {[
+          ['input', '投注输入'],
+          ['review', '异常确认'],
+          ['result', '结果汇总'],
+        ].map(([step, label], index) => (
+          <div className={`stepper-item ${workbenchStep === step ? 'is-active' : ''}`} key={step}>
+            <span>{index + 2}</span>
+            <strong>{label}</strong>
+          </div>
+        ))}
+      </section>
+
+      <section className="panel workflow-status-panel">
+        <div>
+          <span>当前进度</span>
+          <strong>{workflowStatus}</strong>
         </div>
-        <div className="metric accent">
-          <span>中奖金额</span>
-          <strong>{formatMoney(hasGenerated ? summary.totalWinAmount : 0)}</strong>
+        <div className="progress-track" aria-label="处理进度">
+          <div className="progress-fill" style={{ width: `${Math.max(workflowProgress, isWorkflowBusy ? 8 : 0)}%` }} />
         </div>
       </section>
 
-      <nav className="mode-tabs" aria-label="计算模式">
-        {betModes.map((mode) => (
-          <button
-            type="button"
-            key={mode.id}
-            className={betMode === mode.id ? 'is-active' : ''}
-            onClick={() => {
-              setBetMode(mode.id);
-              setStatusText(`已切换到${mode.label}模式`);
-            }}
-          >
-            {mode.label}
-            {modeTexts[mode.id]?.trim() && (
-              <span>{modeTexts[mode.id].split(/\r?\n/).filter(Boolean).length}</span>
-            )}
-          </button>
-        ))}
-      </nav>
-
-      <section className="workspace">
+      {workbenchStep === 'input' && (
+      <section className="workspace input-workspace">
         <div className="input-column">
           <section className="panel screenshot-panel">
             <div className="panel-heading">
@@ -1271,7 +1470,7 @@ function WorkbenchApp() {
             <div className="panel-heading">
               <div>
                 <p className="section-label">手动输入</p>
-                <h2>{activeBetMode.title}</h2>
+                <h2>粘贴全部投注信息</h2>
               </div>
               <span className="line-count">{rawText.split(/\r?\n/).filter(Boolean).length} 行</span>
             </div>
@@ -1287,23 +1486,23 @@ function WorkbenchApp() {
               <textarea
                 value={rawText}
                 onChange={(event) => updateActiveModeText(event.target.value)}
-                placeholder={activeBetMode.placeholder}
+                placeholder="直接粘贴全部投注信息，系统会自动分类平码、连码、数字复式和生肖复式"
                 spellCheck="false"
               />
             </div>
             <div className="text-recognition-footer">
               <div className={`inline-status ${recognitionDone ? 'is-success' : ''}`}>
                 <div>
-                  <span>识别状态</span>
-                  <strong>{statusText}</strong>
+                  <span>处理状态</span>
+                  <strong>{workflowStatus}</strong>
                 </div>
                 <div className="progress-track" aria-label="识别进度">
                   <div
                     className="progress-fill"
-                    style={{ width: `${isRecognizing ? Math.max(recognitionProgress, 8) : recognitionProgress}%` }}
+                    style={{ width: `${isWorkflowBusy ? Math.max(workflowProgress, 8) : workflowProgress}%` }}
                   />
                 </div>
-                {recognitionDone && <em>识别成功，已追加到文本输入区</em>}
+                {workflowProgress === 100 && <em>处理完成，可继续下一步</em>}
               </div>
 
               <div className="recognize-actions text-recognize-actions">
@@ -1311,7 +1510,7 @@ function WorkbenchApp() {
                   type="button"
                   className="secondary-button"
                   onClick={handleRecognizeUploadedTables}
-                  disabled={!canRecognizeUploaded || isRecognizing}
+                  disabled={!canRecognizeUploaded || isWorkflowBusy}
                 >
                   <ScanText size={17} aria-hidden="true" />
                   {isRecognizing ? '正在识别' : '识别表格'}
@@ -1320,15 +1519,93 @@ function WorkbenchApp() {
                   type="button"
                   className="ghost-button"
                   onClick={handleRecognizeUploadedChats}
-                  disabled={!canRecognizeUploaded || isRecognizing}
+                  disabled={!canRecognizeUploaded || isWorkflowBusy}
                 >
                   识别文字
                 </button>
               </div>
             </div>
+            <button
+              type="button"
+              className="primary-button parse-next-button"
+              onClick={handleParseManualBetText}
+              disabled={!manualBetText.trim() || isWorkflowBusy}
+            >
+              下一步解析
+            </button>
           </section>
         </div>
+      </section>
+      )}
 
+      {workbenchStep === 'review' && (
+      <section className="review-workspace">
+        <section className="panel ai-assist-panel">
+          <div className="panel-heading">
+            <div>
+              <p className="section-label">第三页</p>
+              <h2>异常列表确认</h2>
+            </div>
+            <Sparkles size={22} aria-hidden="true" />
+          </div>
+          <p className="ai-assist-status">{aiAssistStatus}</p>
+          <div className="ai-issue-summary">
+            <span>待确认 {aiIssueCounts.needs_confirm}</span>
+            <span>待选择 {aiIssueCounts.needs_mode}</span>
+            <span>无法解析 {aiIssueCounts.unresolved}</span>
+          </div>
+          <div className="ai-issue-list review-list">
+            {pendingAiIssues.length === 0 ? (
+              <div className="ai-empty">异常项已处理完成，可以进入结果页。</div>
+            ) : (
+              pendingAiIssues.map((issue) => (
+                <article className={`ai-issue-row is-${issue.status}`} key={issue.id}>
+                  <div className="ai-issue-header">
+                    <strong>{getAiIssueStatusLabel(issue.status)}</strong>
+                    <span>{issue.message}</span>
+                  </div>
+                  {issue.sourceText && <p>{issue.sourceText}</p>}
+                  <div className="ai-candidate-list">
+                    {(issue.candidates || []).length ? (
+                      issue.candidates.map((candidate, index) => (
+                        <div className="ai-candidate" key={`${issue.id}-${index}`}>
+                          <div>
+                            <strong>{betModes.find((mode) => mode.id === candidate.mode)?.label || candidate.mode}</strong>
+                            <span>{candidate.formula || candidate.reason || candidate.message}</span>
+                          </div>
+                          <code>{candidate.normalizedText || candidate.candidate?.normalizedText}</code>
+                          {candidate.status === 'needs_confirm' && (
+                            <button type="button" onClick={() => handleConfirmAiCandidate(issue.id, candidate)}>
+                              确认计入
+                            </button>
+                          )}
+                        </div>
+                      ))
+                    ) : (
+                      <span className="ai-no-candidate">没有可计入候选，可忽略后继续；该内容不会计入金额。</span>
+                    )}
+                  </div>
+                  <button type="button" className="ghost-button" onClick={() => handleIgnoreAiIssue(issue.id)}>
+                    忽略，不计入金额
+                  </button>
+                </article>
+              ))
+            )}
+          </div>
+          <div className="review-actions">
+            <button type="button" className="ghost-button" onClick={handleBackToInput}>
+              返回补充输入
+            </button>
+            <button type="button" className="primary-button" onClick={handleContinueToResult}>
+              进入结果汇总
+            </button>
+          </div>
+        </section>
+      </section>
+      )}
+
+      {workbenchStep === 'result' && (
+      <section className="workspace result-workspace">
         <div className="control-column">
           <section className="panel draw-panel">
             <p className="section-label">开奖信息</p>
@@ -1410,6 +1687,9 @@ function WorkbenchApp() {
               <strong>{formatMoney(hasGenerated ? summary.totalWinAmount : 0)}</strong>
             </div>
           </section>
+          <button type="button" className="ghost-button" onClick={handleBackToInput}>
+            返回第二页补充投注
+          </button>
         </div>
 
         <aside className="result-panel">
@@ -1469,6 +1749,7 @@ function WorkbenchApp() {
         </aside>
 
       </section>
+      )}
     </main>
   );
 }

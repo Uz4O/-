@@ -2,17 +2,120 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  betModes,
   buildReportText,
   calculateAllModeDraftSummary,
   calculateAllModeLotteryResult,
   calculateLotteryResult,
   classifyBetText,
   classifyRecognizedChatTexts,
+  createAiAssistantModeTexts,
+  createAutoParseDraft,
+  applyAiIssueDecision,
+  validateAiBetCandidate,
   getPreferredBetMode,
   mergeModeTexts,
   mergeRecognizedChatTexts,
   parseBetGroups,
 } from './lottery.js';
+
+describe('AI assisted bet parsing helpers', () => {
+  it('creates an auto parse draft that classifies manual text and skips parseable text for AI', () => {
+    const draft = createAutoParseDraft([
+      '平特一肖牛买1200',
+      '46.47\n5.9二中二出50',
+      '看不懂格式ABC',
+    ].join('\n'));
+
+    assert.equal(draft.modeTexts.pingma, '平特一肖牛买1200');
+    assert.equal(draft.modeTexts.lianma, '46.47\n5.9二中二出50');
+    assert.equal(draft.aiSourceTexts.length, 1);
+    assert.equal(draft.aiSourceTexts[0], '看不懂格式ABC');
+    assert.equal(calculateAllModeDraftSummary(draft.modeTexts).totalBetAmount, 1300);
+  });
+
+  it('validates normalized AI candidate text with the deterministic parser', () => {
+    const result = validateAiBetCandidate({
+      mode: 'zodiacFushi',
+      normalizedText: [
+        '鸡马虎龙猴蛇，鸡马龙虎猴蛇，虎鸡兔狗猴龙，鼠虎龙马猴狗，狗鸡兔龙马猪，马猪蛇猴兔虎',
+        '一个号20',
+      ].join('\n'),
+      reason: '多组生肖共用一个号金额',
+      modelUsed: 'deepseek-v4-flash',
+    });
+
+    assert.equal(result.status, 'needs_confirm');
+    assert.equal(result.betAmount, 2400);
+    assert.equal(result.groupCount, 6);
+    assert.equal(result.formula, '6组 × C(6,3) × 20 = 2400');
+    assert.equal(result.candidate.mode, 'zodiacFushi');
+  });
+
+  it('marks AI candidates unresolved when the normalized text cannot be parsed', () => {
+    const result = validateAiBetCandidate({
+      mode: 'pingma',
+      normalizedText: '这句没有金额',
+      reason: 'AI 未抽到完整字段',
+      modelUsed: 'deepseek-v4-flash',
+    });
+
+    assert.equal(result.status, 'unresolved');
+    assert.equal(result.betAmount, 0);
+    assert.match(result.message, /无法被本地规则解析/);
+  });
+
+  it('builds mode text patches for confirmed AI candidates', () => {
+    const patch = createAiAssistantModeTexts({
+      mode: 'zodiacFushi',
+      normalizedText: '鸡马虎龙猴蛇\n一个号20',
+    });
+
+    assert.deepEqual(patch, {
+      pingma: '',
+      lianma: '',
+      numberFushi: '',
+      zodiacFushi: '鸡马虎龙猴蛇\n一个号20',
+      fushi: '',
+    });
+  });
+
+  it('applies confirmed and ignored AI issue decisions without counting unresolved text', () => {
+    const currentTexts = createAutoParseDraft('平特一肖牛买1200').modeTexts;
+    const confirmed = applyAiIssueDecision(currentTexts, {
+      action: 'confirm',
+      candidate: {
+        mode: 'zodiacFushi',
+        normalizedText: '鸡马虎龙猴蛇\n一个号20',
+      },
+    });
+    const ignored = applyAiIssueDecision(confirmed, {
+      action: 'ignore',
+      candidate: {
+        mode: 'pingma',
+        normalizedText: '看不懂格式ABC',
+      },
+    });
+
+    assert.equal(confirmed.zodiacFushi, '鸡马虎龙猴蛇\n一个号20');
+    assert.equal(ignored.pingma, '平特一肖牛买1200');
+    assert.equal(calculateAllModeDraftSummary(ignored).totalBetAmount, 1600);
+  });
+});
+
+describe('betModes', () => {
+  it('把复式拆成数字复式和生肖复式两个网站模式', () => {
+    assert.deepEqual(
+      betModes.map((mode) => [mode.id, mode.label]),
+      [
+        ['pingma', '平码'],
+        ['lianma', '连码'],
+        ['numberFushi', '数字复式'],
+        ['zodiacFushi', '生肖复式'],
+      ],
+    );
+  });
+});
 
 describe('parseBetGroups', () => {
   it('parses compact OCR slash numbers as two-digit mark six numbers', () => {
@@ -216,6 +319,56 @@ describe('parseBetGroups', () => {
     assert.deepEqual(groups.map((group) => group.amountPerNumber), [10, 100, 70, 300]);
   });
 
+  it('解析多行生肖组共用一个号金额并把侯当作猴', () => {
+    const groups = parseBetGroups(
+      [
+        '鸡马虎龙候蛇，鸡马龙虎猴蛇，虎鸡兔狗候龙，鼠虎龙马猴狗，狗鸡兔龙马猪，马猪蛇候兔虎，',
+        '一个号20',
+      ].join('\n'),
+      'pingma',
+    );
+
+    assert.equal(groups.length, 6);
+    assert.deepEqual(groups.map((group) => group.zodiacs.join('')), [
+      '鸡马虎龙猴蛇',
+      '鸡马龙虎猴蛇',
+      '虎鸡兔狗猴龙',
+      '鼠虎龙马猴狗',
+      '狗鸡兔龙马猪',
+      '马猪蛇猴兔虎',
+    ]);
+    assert.deepEqual(groups.map((group) => group.numbers.length), [25, 25, 24, 25, 25, 25]);
+    assert.deepEqual(groups.map((group) => group.amountPerNumber), [20, 20, 20, 20, 20, 20]);
+    assert.equal(groups.reduce((sum, group) => sum + group.betAmount, 0), 2980);
+  });
+
+  it('普通生肖平码也把候和侯当作猴', () => {
+    const groups = parseBetGroups('候20\n侯20', 'pingma');
+
+    assert.equal(groups.length, 2);
+    assert.deepEqual(
+      groups.map((group) => group.numbers),
+      [
+        ['11', '23', '35', '47'],
+        ['11', '23', '35', '47'],
+      ],
+    );
+    assert.deepEqual(groups.map((group) => group.betLabel), ['猴', '猴']);
+    assert.equal(groups.reduce((sum, group) => sum + group.betAmount, 0), 160);
+  });
+
+  it('斜杠后的数字后面还有各金额时把斜杠数字当作平码号码', () => {
+    const groups = parseBetGroups('21..47.12..36/25..2.32..24.39.13..42.19各五十.14..26.05..17..29..41..44/38各100', 'pingma');
+
+    assert.deepEqual(groups.map((group) => group.numbers), [
+      ['21', '47', '12', '36'],
+      ['02', '32', '24', '39', '13', '42', '19'],
+      ['14', '26', '05', '17', '29', '41', '44', '38'],
+    ]);
+    assert.deepEqual(groups.map((group) => group.amountPerNumber), [25, 50, 100]);
+    assert.equal(groups.reduce((sum, group) => sum + group.betAmount, 0), 1250);
+  });
+
   it('解析连码手工组合', () => {
     const groups = parseBetGroups('46.47\n4.14\n24.32\n5.9二中二出50', 'lianma');
 
@@ -264,6 +417,14 @@ describe('parseBetGroups', () => {
     assert.equal(groups[0].betAmount, 1000);
   });
 
+  it('数字复式模式只解析数字复式玩法', () => {
+    const groups = parseBetGroups('21-47-32--13-42复式特碰每组100\n羊鸡猪牛复四三各五十', 'numberFushi');
+
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0].comboType, '特碰');
+    assert.equal(groups[0].betAmount, 1000);
+  });
+
   it('未配置赔率的二中三不参与计算，避免错误赔付', () => {
     const groups = parseBetGroups('复试二中三各20\n23.22.27.06', 'fushi');
 
@@ -284,6 +445,49 @@ describe('parseBetGroups', () => {
       ['牛', '兔', '龙'],
       ['鸡', '兔', '龙'],
     ]);
+  });
+
+  it('生肖复式模式只解析生肖复式玩法', () => {
+    const groups = parseBetGroups('21-47-32--13-42复式特碰每组100\n羊鸡猪牛复四三各五十', 'zodiacFushi');
+
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0].betMode, 'manual-combo');
+    assert.equal(groups[0].comboType, '复四三');
+    assert.equal(groups[0].comboCount, 4);
+    assert.equal(groups[0].betAmount, 200);
+  });
+
+  it('生肖复式也把候和侯当作猴', () => {
+    const groups = parseBetGroups('羊鸡猪侯复四三各五十\n羊鸡猪候复四三各五十', 'zodiacFushi');
+
+    assert.equal(groups.length, 2);
+    assert.deepEqual(groups.map((group) => group.zodiacs.join('')), ['羊鸡猪猴', '羊鸡猪猴']);
+    assert.deepEqual(groups.map((group) => group.betAmount), [200, 200]);
+  });
+
+  it('生肖复式模式下解析连写的生肖复式和平特一肖混合文本', () => {
+    const groups = parseBetGroups('羊鸡猪牛复四三各五十平特羊又鸡各一佰', 'zodiacFushi');
+
+    assert.equal(groups.length, 2);
+    assert.deepEqual(groups.map((group) => group.betAmount), [200, 200]);
+    assert.equal(groups.reduce((sum, group) => sum + group.betAmount, 0), 400);
+  });
+
+  it('生肖复式模式下多组生肖一个号金额按三中三组合计算', () => {
+    const groups = parseBetGroups(
+      [
+        '鸡马虎龙候蛇，鸡马龙虎猴蛇，虎鸡兔狗候龙，鼠虎龙马猴狗，狗鸡兔龙马猪，马猪蛇候兔虎，',
+        '一个号20',
+      ].join('\n'),
+      'zodiacFushi',
+    );
+
+    assert.equal(groups.length, 6);
+    assert.deepEqual(groups.map((group) => group.betMode), Array(6).fill('manual-combo'));
+    assert.deepEqual(groups.map((group) => group.comboType), Array(6).fill('三中三'));
+    assert.deepEqual(groups.map((group) => group.comboCount), Array(6).fill(20));
+    assert.deepEqual(groups.map((group) => group.betAmount), Array(6).fill(400));
+    assert.equal(groups.reduce((sum, group) => sum + group.betAmount, 0), 2400);
   });
 });
 
@@ -388,6 +592,50 @@ describe('calculateAllModeLotteryResult', () => {
 
     assert.equal(summary.totalBetAmount, 400);
     assert.equal(summary.groupCount, 3);
+  });
+
+  it('汇总数字复式和生肖复式两个模式', () => {
+    const summary = calculateAllModeDraftSummary({
+      pingma: '',
+      lianma: '',
+      numberFushi: '21-47-32--13-42复式特碰每组100',
+      zodiacFushi: '羊鸡猪牛复四三各五十',
+    });
+
+    assert.equal(summary.totalBetAmount, 1200);
+    assert.equal(summary.groupCount, 2);
+  });
+
+  it('手动粘贴混合文本到生肖复式模式时仍汇总所有金额', () => {
+    const summary = calculateAllModeDraftSummary({
+      pingma: '',
+      lianma: '',
+      numberFushi: '',
+      zodiacFushi: '羊鸡猪牛复四三各五十平特羊又鸡各一佰',
+    });
+
+    assert.equal(summary.totalBetAmount, 400);
+    assert.equal(summary.groupCount, 2);
+  });
+
+  it('手动粘贴混合文本到生肖复式模式后生成结果不崩溃', () => {
+    const result = calculateAllModeLotteryResult(
+      {
+        pingma: '',
+        lianma: '',
+        numberFushi: '',
+        zodiacFushi: '羊鸡猪牛复四三各五十平特羊又鸡各一佰',
+      },
+      {
+        drawNumber: '26',
+        extraDrawNumbers: '24.20.32.05.19.07',
+        drawZodiac: '蛇',
+      },
+    );
+
+    assert.equal(result.summary.totalBetAmount, 400);
+    assert.equal(result.summary.totalWinAmount, 4700);
+    assert.equal(result.summary.groupCount, 2);
   });
 
   it('汇总平码、连码和复式三个模式的投注金额与中奖金额', () => {
@@ -527,26 +775,27 @@ describe('classifyBetText', () => {
 
     assert.equal(result.pingma, '狗20');
     assert.equal(result.lianma, '46.47\n5.9二中二出50');
-    assert.equal(result.fushi, '复试二中二各20\n23.22.27.06');
+    assert.equal(result.numberFushi, '复试二中二各20\n23.22.27.06');
+    assert.equal(result.zodiacFushi, '');
   });
 
   it('分类时保留复式标题后的多行号码', () => {
     const result = classifyBetText('复试三中三各20\n23.22.27.06\n01.02.03\n狗20');
 
-    assert.equal(result.fushi, '复试三中三各20\n23.22.27.06\n01.02.03');
+    assert.equal(result.numberFushi, '复试三中三各20\n23.22.27.06\n01.02.03');
     assert.equal(result.pingma, '狗20');
   });
 
   it('复式 slash 格式优先归类到复式而不是平码', () => {
     const result = classifyBetText('二中二 04.05.09.14.24/50\n12...48..07/250');
 
-    assert.equal(result.fushi, '二中二04.05.09.14.24/50');
+    assert.equal(result.numberFushi, '二中二04.05.09.14.24/50');
     assert.equal(result.pingma, '12...48..07/250');
   });
 
   it('新的复式玩法行会结束上一段复式号码池', () => {
     const result = classifyBetText('复试三中三各20\n23.22.27.06\n01.02.03\n二中二 04.05.09.14.24/50');
-    const groups = parseBetGroups(result.fushi, 'fushi');
+    const groups = parseBetGroups(result.numberFushi, 'numberFushi');
 
     assert.equal(groups.length, 2);
     assert.equal(groups[0].comboType, '三中三');
@@ -560,16 +809,47 @@ describe('classifyBetText', () => {
   it('把生肖复四三口头写法归类到复式', () => {
     const result = classifyBetText('牛鸡兔龙复四三各五十\n狗20');
 
-    assert.equal(result.fushi, '牛鸡兔龙复四三各五十');
+    assert.equal(result.zodiacFushi, '牛鸡兔龙复四三各五十');
+    assert.equal(result.numberFushi, '');
     assert.equal(result.pingma, '狗20');
+  });
+
+  it('把多组生肖一个号金额归类到生肖复式', () => {
+    const text = [
+      '鸡马虎龙候蛇，鸡马龙虎猴蛇，虎鸡兔狗候龙，鼠虎龙马猴狗，狗鸡兔龙马猪，马猪蛇候兔虎，',
+      '一个号20',
+    ].join('\n');
+    const result = classifyBetText(text);
+
+    assert.equal(result.zodiacFushi, text);
+    assert.equal(result.pingma, '');
+    assert.equal(calculateAllModeDraftSummary(result).totalBetAmount, 2400);
   });
 
   it('把复式特碰口头写法归类到复式', () => {
     const result = classifyBetText('21-47-32--13-42复式特碰每组100');
 
-    assert.equal(result.fushi, '21-47-32--13-42复式特碰每组100');
+    assert.equal(result.numberFushi, '21-47-32--13-42复式特碰每组100');
+    assert.equal(result.zodiacFushi, '');
     assert.equal(result.pingma, '');
     assert.equal(result.lianma, '');
+  });
+
+  it('把数字复式和生肖复式分类到不同复式桶', () => {
+    const result = classifyBetText('21-47-32--13-42复式特碰每组100\n羊鸡猪牛复四三各五十\n平特羊又鸡各一佰');
+
+    assert.equal(result.numberFushi, '21-47-32--13-42复式特碰每组100');
+    assert.equal(result.zodiacFushi, '羊鸡猪牛复四三各五十');
+    assert.equal(result.fushi, '');
+    assert.equal(result.pingma, '平特羊又鸡各一佰');
+  });
+
+  it('把连写的生肖复式和平特一肖拆开分类', () => {
+    const result = classifyBetText('羊鸡猪牛复四三各五十平特羊又鸡各一佰');
+
+    assert.equal(result.zodiacFushi, '羊鸡猪牛复四三各五十');
+    assert.equal(result.pingma, '平特羊又鸡各一佰');
+    assert.equal(calculateAllModeDraftSummary(result).totalBetAmount, 400);
   });
 });
 
@@ -826,17 +1106,23 @@ describe('mergeModeTexts', () => {
       pingma: ['12 35 08/250', '46 03 19 27 41 06 22 14/150'].join('\n'),
       lianma: '05.09二中二出50',
       fushi: '',
+      numberFushi: '',
+      zodiacFushi: '',
     };
     const addition = {
       pingma: ['46 03 19 27 41 06 22 14/150', '09 31 44 18 25/100'].join('\n'),
       lianma: '05.09二中二出50\n复式三中三各20',
       fushi: '',
+      numberFushi: '21-47-32--13-42复式特碰每组100',
+      zodiacFushi: '羊鸡猪牛复四三各五十',
     };
 
     assert.deepEqual(mergeModeTexts(current, addition), {
       pingma: ['12 35 08/250', '46 03 19 27 41 06 22 14/150', '09 31 44 18 25/100'].join('\n'),
       lianma: '05.09二中二出50\n复式三中三各20',
       fushi: '',
+      numberFushi: '21-47-32--13-42复式特碰每组100',
+      zodiacFushi: '羊鸡猪牛复四三各五十',
     });
   });
 });
@@ -847,7 +1133,8 @@ describe('getPreferredBetMode', () => {
       getPreferredBetMode({
         pingma: '15 24 39/250\n08 21 37 44/100',
         lianma: '04.17.32\n09.26.41\n13.28.45\n06.22.39三中三每组35',
-        fushi: '复式三中三各20\n05.16.23.31.38.49',
+        numberFushi: '复式三中三各20\n05.16.23.31.38.49',
+        zodiacFushi: '',
       }),
       'lianma',
     );
@@ -927,5 +1214,28 @@ describe('classifyRecognizedChatTexts', () => {
     ]);
 
     assert.equal(result.lianma, '46.47\n4.14\n24.32\n9.10\n31.33\n21.25\n5.9二中二出50');
+  });
+
+  it('聊天 OCR 分类时分开数字复式和生肖复式', () => {
+    const result = classifyRecognizedChatTexts([
+      '21-47-32--13-42复式特碰每组100\n羊鸡猪牛复四三各五十\n平特羊又鸡各一佰',
+    ]);
+
+    assert.equal(result.numberFushi, '21-47-32--13-42复式特碰每组100');
+    assert.equal(result.zodiacFushi, '羊鸡猪牛复四三各五十');
+    assert.equal(result.pingma, '平特羊又鸡各一佰');
+    assert.equal(calculateAllModeDraftSummary(result).totalBetAmount, 1400);
+  });
+
+  it('聊天 OCR 分类时把多组生肖一个号金额放到生肖复式', () => {
+    const text = [
+      '鸡马虎龙候蛇，鸡马龙虎猴蛇，虎鸡兔狗候龙，鼠虎龙马猴狗，狗鸡兔龙马猪，马猪蛇候兔虎，',
+      '一个号20',
+    ].join('\n');
+    const result = classifyRecognizedChatTexts([text]);
+
+    assert.equal(result.zodiacFushi, text);
+    assert.equal(result.pingma, '');
+    assert.equal(calculateAllModeDraftSummary(result).totalBetAmount, 2400);
   });
 });
