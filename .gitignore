@@ -4,6 +4,7 @@ node_modules/
 # Build and cache output
 dist/
 .vite/
+.superpowers/
 
 # Python virtualenvs, caches, and OCR model data
 .venv/

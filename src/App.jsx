@@ -1343,11 +1343,11 @@ function WorkbenchApp() {
   }
 
   return (
-    <main className="app-shell">
-      <header className="topbar">
+    <main className="app-shell mobile-app-shell">
+      <header className="topbar mobile-topbar">
         <div>
-          <p className="eyebrow">Data Workbench</p>
-          <h1>计算工作台</h1>
+          <p className="eyebrow">Mark Six</p>
+          <h1>投注计算</h1>
           <span className="app-version">{appVersion}</span>
         </div>
         <div className="topbar-status">
@@ -1356,22 +1356,9 @@ function WorkbenchApp() {
         </div>
       </header>
 
-      <section className="stepper" aria-label="处理进度">
-        {[
-          ['input', '投注输入'],
-          ['review', '异常确认'],
-          ['result', '结果汇总'],
-        ].map(([step, label], index) => (
-          <div className={`stepper-item ${workbenchStep === step ? 'is-active' : ''}`} key={step}>
-            <span>{index + 2}</span>
-            <strong>{label}</strong>
-          </div>
-        ))}
-      </section>
-
-      <section className="panel workflow-status-panel">
+      <section className="workflow-status-panel mobile-status-card">
         <div>
-          <span>当前进度</span>
+          <span>处理状态</span>
           <strong>{workflowStatus}</strong>
         </div>
         <div className="progress-track" aria-label="处理进度">
@@ -1380,7 +1367,7 @@ function WorkbenchApp() {
       </section>
 
       {workbenchStep === 'input' && (
-      <section className="workspace input-workspace">
+      <section className="mobile-workspace input-workspace">
         <div className="input-column">
           <section className="panel screenshot-panel">
             <div className="panel-heading">
@@ -1539,12 +1526,12 @@ function WorkbenchApp() {
       )}
 
       {workbenchStep === 'review' && (
-      <section className="review-workspace">
+      <section className="mobile-workspace review-workspace">
         <section className="panel ai-assist-panel">
           <div className="panel-heading">
             <div>
-              <p className="section-label">第三页</p>
-              <h2>异常列表确认</h2>
+              <p className="section-label">异常确认</p>
+              <h2>确认可计入的投注</h2>
             </div>
             <Sparkles size={22} aria-hidden="true" />
           </div>
@@ -1605,7 +1592,7 @@ function WorkbenchApp() {
       )}
 
       {workbenchStep === 'result' && (
-      <section className="workspace result-workspace">
+      <section className="mobile-workspace result-workspace">
         <div className="control-column">
           <section className="panel draw-panel">
             <p className="section-label">开奖信息</p>
@@ -1676,26 +1663,26 @@ function WorkbenchApp() {
             {!canGenerate && <p className="form-tip">需要填入 01-49 的开奖数字，生肖会自动选择。</p>}
           </section>
 
-          <section className="panel quick-summary">
+          <section className="panel quick-summary result-metric-grid">
             <p className="section-label">金额汇总</p>
             <div className="metric">
-              <span>总赌注金额</span>
+              <span>总投注金额</span>
               <strong>{formatMoney(draftSummary.totalBetAmount)}</strong>
             </div>
             <div className="metric accent">
-              <span>总用户中奖金额</span>
+              <span>总中奖金额</span>
               <strong>{formatMoney(hasGenerated ? summary.totalWinAmount : 0)}</strong>
             </div>
           </section>
           <button type="button" className="ghost-button" onClick={handleBackToInput}>
-            返回第二页补充投注
+            返回补充投注
           </button>
         </div>
 
         <aside className="result-panel">
           <div className="result-header">
             <div>
-              <p className="section-label">副窗口</p>
+              <p className="section-label">中奖名单</p>
               <h2>中奖发放名单</h2>
             </div>
             <div className="result-actions">
