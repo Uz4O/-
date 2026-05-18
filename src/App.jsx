@@ -34,6 +34,7 @@ import {
   joinBetText,
   normalizeMarkSixNumber,
   mergeModeTexts,
+  validateAiBetCandidate,
 } from './lib/lottery.js';
 import { buildLicenseHeaders, createBrowserId, toGeneratedCodeRows } from './lib/licenseClient.js';
 
@@ -131,6 +132,32 @@ async function compressImageForRecognition(file, options = {}) {
   } finally {
     URL.revokeObjectURL(imageUrl);
   }
+}
+
+async function prepareChatImageForRecognition(file) {
+  const maxRawBytes = 8 * 1024 * 1024;
+
+  if (file.size > 0 && file.size <= maxRawBytes) {
+    return {
+      imageBase64: await fileToBase64(file),
+      mimeType: file.type || 'image/png',
+      originalSize: file.size,
+      compressedSize: file.size,
+      strategy: 'original',
+    };
+  }
+
+  return {
+    ...(await compressImageForRecognition(file, {
+      maxSide: 3200,
+      minWidth: 1200,
+      quality: 0.95,
+      crop: {
+        top: 0.105,
+      },
+    })),
+    strategy: 'highQuality',
+  };
 }
 
 async function readJsonResponse(response) {
@@ -700,10 +727,17 @@ function WorkbenchApp() {
   const [isDragging, setIsDragging] = useState(false);
   const [isRecognizing, setIsRecognizing] = useState(false);
   const [recognitionProgress, setRecognitionProgress] = useState(0);
+  const [ocrTranscriptText, setOcrTranscriptText] = useState('');
   const [aiSourceTexts, setAiSourceTexts] = useState([]);
   const [aiIssues, setAiIssues] = useState([]);
   const [isAiAssisting, setIsAiAssisting] = useState(false);
   const [aiAssistStatus, setAiAssistStatus] = useState('等待 OCR 原文或输入框文本');
+  const [manualFixIssueId, setManualFixIssueId] = useState('');
+  const [manualFixMode, setManualFixMode] = useState('pingma');
+  const [manualFixText, setManualFixText] = useState('');
+  const [manualFixPreview, setManualFixPreview] = useState(null);
+  const [manualFixError, setManualFixError] = useState('');
+  const [isSavingParsingSample, setIsSavingParsingSample] = useState(false);
   const [workflowStatus, setWorkflowStatus] = useState('等待输入投注信息或上传聊天截图');
   const [workflowProgress, setWorkflowProgress] = useState(0);
   const [copyState, setCopyState] = useState('复制汇报');
@@ -904,8 +938,85 @@ function WorkbenchApp() {
     generateFromModeTexts(nextModeTexts, 'AI 候选已确认并追加到输入区');
   }
 
+  function resetManualFixState() {
+    setManualFixIssueId('');
+    setManualFixMode('pingma');
+    setManualFixText('');
+    setManualFixPreview(null);
+    setManualFixError('');
+  }
+
+  function handleOpenManualFix(issue) {
+    setManualFixIssueId(issue.id);
+    setManualFixMode('pingma');
+    setManualFixText('');
+    setManualFixPreview(null);
+    setManualFixError('');
+  }
+
+  function handleValidateManualFix() {
+    const normalizedText = manualFixText.trim();
+    if (!normalizedText) {
+      setManualFixPreview(null);
+      setManualFixError('请先填写规范文本');
+      return null;
+    }
+
+    const candidate = validateAiBetCandidate({
+      mode: manualFixMode,
+      normalizedText,
+      reason: '用户手动修正',
+      modelUsed: 'manual',
+      warnings: [],
+    });
+
+    if (candidate.status !== 'needs_confirm') {
+      setManualFixPreview(null);
+      setManualFixError(candidate.message || '该文本无法被本地规则解析，请检查玩法、号码和金额。');
+      return null;
+    }
+
+    setManualFixPreview(candidate);
+    setManualFixError('');
+    return candidate;
+  }
+
+  async function handleConfirmManualFix(issue) {
+    const candidate = manualFixPreview || handleValidateManualFix();
+    if (!candidate || isSavingParsingSample) return;
+
+    handleConfirmAiCandidate(issue.id, candidate);
+    setIsSavingParsingSample(true);
+    try {
+      const { response, payload } = await fetchJson('/api/parsing-samples', {
+        method: 'POST',
+        body: JSON.stringify({
+          sourceText: issue.sourceText || '',
+          mode: candidate.mode,
+          normalizedText: candidate.normalizedText,
+          formula: candidate.formula,
+          createdFrom: 'manual_fix',
+        }),
+      });
+      if (!response.ok || !payload.ok) throw new Error(payload.error || '样本保存失败');
+      setAiAssistStatus('手动修正已计入，样本已保存');
+      setWorkflowStatus('手动修正已计入，样本已保存');
+      resetManualFixState();
+    } catch (error) {
+      const errorText = error instanceof Error ? `该投注已计入金额，但样本保存失败：${error.message}` : '该投注已计入金额，但样本保存失败';
+      setManualFixError(errorText);
+      setAiAssistStatus(errorText);
+      setWorkflowStatus('手动修正已计入金额，但样本保存失败');
+      setManualFixIssueId('');
+      setManualFixPreview(null);
+    } finally {
+      setIsSavingParsingSample(false);
+    }
+  }
+
   function handleIgnoreAiIssue(issueId) {
     setAiIssues((current) => current.filter((item) => item.id !== issueId));
+    if (manualFixIssueId === issueId) resetManualFixState();
     setWorkflowStatus('已忽略该异常项，忽略内容不会计入金额');
   }
 
@@ -1089,6 +1200,7 @@ function WorkbenchApp() {
     setHasSelectedFiles(false);
     setUploadDebugText('未选择图片');
     setRecognitionProgress(0);
+    setOcrTranscriptText('');
     setStatusText('已清除已上传图片');
   }
 
@@ -1179,6 +1291,7 @@ function WorkbenchApp() {
         return;
       }
 
+      setOcrTranscriptText(combinedText);
       const nextModeTexts = appendModeTexts({ ...initialModeTexts, pingma: combinedText });
       setBetMode('pingma');
       setRecognitionProgress(100);
@@ -1215,27 +1328,23 @@ function WorkbenchApp() {
 
       for (const [index, source] of sources.entries()) {
         const currentIndex = index + 1;
-        const compressedImage = await compressImageForRecognition(source.file, {
-          maxSide: 2600,
-          minWidth: 900,
-          quality: 0.92,
-          crop: {
-            top: 0.105,
-          },
-        });
-        const compressRatio = compressedImage.originalSize
-          ? Math.round((compressedImage.compressedSize / compressedImage.originalSize) * 100)
+        const preparedImage = await prepareChatImageForRecognition(source.file);
+        const compressRatio = preparedImage.originalSize
+          ? Math.round((preparedImage.compressedSize / preparedImage.originalSize) * 100)
           : 100;
 
         setRecognitionProgress(Math.round(16 + (index / sources.length) * 66));
         const nextProgress = Math.round(16 + (index / sources.length) * 52);
         setWorkflowProgress(nextProgress);
-        setStatusText(`正在识别第 ${currentIndex}/${sources.length} 张聊天图，图片已压缩到原大小 ${compressRatio}%`);
-        setWorkflowStatus(`OCR 正在识别第 ${currentIndex}/${sources.length} 张聊天图，图片已压缩到原大小 ${compressRatio}%`);
+        const imageStatus = preparedImage.strategy === 'original'
+          ? '使用原图并在 OCR 服务端清晰化'
+          : `图片过大，已按高清模式处理到原大小 ${compressRatio}%`;
+        setStatusText(`正在识别第 ${currentIndex}/${sources.length} 张聊天图，${imageStatus}`);
+        setWorkflowStatus(`文字 OCR 正在识别第 ${currentIndex}/${sources.length} 张，${imageStatus}`);
 
         const response = await postRecognitionRequest('/api/recognize-chat', {
-          imageBase64: compressedImage.imageBase64,
-          mimeType: compressedImage.mimeType,
+          imageBase64: preparedImage.imageBase64,
+          mimeType: preparedImage.mimeType,
         });
         const payload = await readJsonResponse(response);
 
@@ -1248,6 +1357,7 @@ function WorkbenchApp() {
       }
 
       const classifiedTexts = classifyRecognizedChatTexts(recognizedTexts);
+      const combinedText = recognizedTexts.join('\n');
       const hasClassifiedText = Object.values(classifiedTexts).some((text) => text.trim());
       if (!hasClassifiedText) {
         setRecognitionProgress(0);
@@ -1261,7 +1371,8 @@ function WorkbenchApp() {
 
       setWorkflowProgress(68);
       setWorkflowStatus('OCR 已返回，正在本地分类并准备 AI 格式化');
-      const autoDraft = createAutoParseDraft(recognizedTexts.join('\n'), classifiedTexts);
+      setOcrTranscriptText(combinedText);
+      const autoDraft = createAutoParseDraft(combinedText, classifiedTexts);
       const nextModeTexts = mergeModeTexts(modeTextsRef.current, classifiedTexts);
       setBetMode(getPreferredBetMode(classifiedTexts));
       await runAiReviewForDraft({
@@ -1321,6 +1432,7 @@ function WorkbenchApp() {
   function handleReset() {
     setModeTexts(initialModeTexts);
     setManualBetText('');
+    setOcrTranscriptText('');
     setWorkbenchStep('input');
     setScreenshots([]);
     setHasSelectedFiles(false);
@@ -1572,6 +1684,72 @@ function WorkbenchApp() {
                       <span className="ai-no-candidate">没有可计入候选，可忽略后继续；该内容不会计入金额。</span>
                     )}
                   </div>
+                  {issue.status === 'unresolved' && manualFixIssueId !== issue.id && (
+                    <button type="button" className="secondary-button" onClick={() => handleOpenManualFix(issue)}>
+                      手动修正
+                    </button>
+                  )}
+                  {issue.status === 'unresolved' && manualFixIssueId === issue.id && (
+                    <div className="manual-fix-panel">
+                      <label>
+                        <span>原文</span>
+                        <textarea value={issue.sourceText || ''} readOnly rows={3} />
+                      </label>
+                      <div className="manual-fix-mode-grid" role="group" aria-label="选择投注模式">
+                        {betModes.map((mode) => (
+                          <button
+                            type="button"
+                            className={manualFixMode === mode.id ? 'is-active' : ''}
+                            key={mode.id}
+                            onClick={() => {
+                              setManualFixMode(mode.id);
+                              setManualFixPreview(null);
+                              setManualFixError('');
+                            }}
+                          >
+                            {mode.label}
+                          </button>
+                        ))}
+                      </div>
+                      <label>
+                        <span>规范文本</span>
+                        <textarea
+                          value={manualFixText}
+                          rows={4}
+                          onChange={(event) => {
+                            setManualFixText(event.target.value);
+                            setManualFixPreview(null);
+                            setManualFixError('');
+                          }}
+                          placeholder="例如：虎兔龙蛇复四三各50"
+                        />
+                      </label>
+                      {manualFixPreview && (
+                        <div className="manual-fix-preview">
+                          <strong>校验通过</strong>
+                          <span>{betModes.find((mode) => mode.id === manualFixPreview.mode)?.label || manualFixPreview.mode}</span>
+                          <code>{manualFixPreview.formula}</code>
+                        </div>
+                      )}
+                      {manualFixError && <p className="manual-fix-error">{manualFixError}</p>}
+                      <div className="manual-fix-actions">
+                        <button type="button" className="ghost-button" onClick={resetManualFixState} disabled={isSavingParsingSample}>
+                          取消
+                        </button>
+                        <button type="button" className="secondary-button" onClick={handleValidateManualFix} disabled={isSavingParsingSample}>
+                          校验
+                        </button>
+                        <button
+                          type="button"
+                          className="primary-button"
+                          onClick={() => handleConfirmManualFix(issue)}
+                          disabled={!manualFixPreview || isSavingParsingSample}
+                        >
+                          {isSavingParsingSample ? '保存中' : '确认计入'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   <button type="button" className="ghost-button" onClick={() => handleIgnoreAiIssue(issue.id)}>
                     忽略，不计入金额
                   </button>
@@ -1673,6 +1851,18 @@ function WorkbenchApp() {
               <span>总中奖金额</span>
               <strong>{formatMoney(hasGenerated ? summary.totalWinAmount : 0)}</strong>
             </div>
+          </section>
+          <section className="panel ocr-transcript-panel">
+            <div className="panel-heading">
+              <div>
+                <p className="section-label">识别原文</p>
+                <h2>OCR 提取文字</h2>
+              </div>
+              <ScanText size={21} aria-hidden="true" />
+            </div>
+            <pre className="ocr-transcript-text">
+              {ocrTranscriptText.trim() || '暂无 OCR 原文'}
+            </pre>
           </section>
           <button type="button" className="ghost-button" onClick={handleBackToInput}>
             返回补充投注

@@ -6,6 +6,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import express from 'express';
 
 import { assistBetParsing } from './deepseekBetAssistant.js';
+import { saveParsingSample } from './parsingSamples.js';
 import {
   activateLicenseCard,
   createEmptyLicenseStore,
@@ -62,6 +63,7 @@ export function createApp({ env = process.env, deepseekFetch = fetch } = {}) {
   const ocrRateLimitMax = Number(env.OCR_RATE_LIMIT_MAX || 20);
   const dataPath = defaultDataPath;
   const lotteryCachePath = path.join(dataPath, 'latest-lottery-result.json');
+  const parsingSamplesPath = path.resolve(env.PARSING_SAMPLES_FILE || path.join(dataPath, 'parsing-samples.json'));
   const lotterySourceApi = env.LOTTERY_SOURCE_API || 'https://kj.9bkj.com:1888/kj';
   const lotterySourceGroup = env.LOTTERY_SOURCE_GROUP || 'am';
   const lotterySyncIntervalMs = Number(env.LOTTERY_SYNC_INTERVAL_MS || 60000);
@@ -624,10 +626,33 @@ export function createApp({ env = process.env, deepseekFetch = fetch } = {}) {
         fetchImpl: deepseekFetch,
         sourceTexts,
         modeTexts,
+        parsingSamplesPath,
       });
       res.json(payload);
     } catch (error) {
       jsonError(res, 503, error instanceof Error ? error.message : 'AI 辅助解析失败');
+    }
+  });
+
+  app.post('/api/parsing-samples', requireLicenseSession, limitOcrRequests, async (req, res) => {
+    try {
+      const result = await saveParsingSample(parsingSamplesPath, req.body || {});
+      if (!result.ok) {
+        jsonError(res, 400, result.error || '样本保存失败');
+        return;
+      }
+
+      res.json({
+        ok: true,
+        sample: {
+          id: result.sample.id,
+          mode: result.sample.mode,
+          normalizedText: result.sample.normalizedText,
+          formula: result.sample.formula,
+        },
+      });
+    } catch (error) {
+      jsonError(res, 500, error instanceof Error ? error.message : '样本保存失败');
     }
   });
 

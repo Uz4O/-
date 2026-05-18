@@ -3,6 +3,7 @@ from typing import Any
 
 import numpy as np
 
+from .image_utils import enhance_chat_text_image
 from .ocr_engine import get_ocr_engine
 
 
@@ -163,12 +164,53 @@ def clean_chat_text(text: str) -> str:
     return "\n".join(cleaned_lines)
 
 
+def _score_cleaned_chat_text(text: str) -> tuple[int, int, int]:
+    lines = [line for line in text.splitlines() if line.strip()]
+    digit_count = sum(ch.isdigit() for ch in text)
+    keyword_count = len(
+        re.findall(
+            r"各下|各押|各买|一个号|每号|平码|平马|连码|复试|复式|二中二|二中三|三中三",
+            text,
+        )
+    )
+    return (len(lines), keyword_count, digit_count)
+
+
+def select_best_chat_ocr_result(results: list[dict[str, str]]) -> dict[str, str | bool | int]:
+    best: dict[str, str | bool | int] | None = None
+    best_score = (-1, -1, -1)
+
+    for result in results:
+        raw_text = str(result.get("rawText", ""))
+        cleaned_text = clean_chat_text(raw_text)
+        score = _score_cleaned_chat_text(cleaned_text)
+        if score > best_score:
+            best_score = score
+            best = {
+                "ok": True,
+                "variant": str(result.get("variant", "original")),
+                "text": cleaned_text,
+                "rawText": raw_text,
+                "ocrVariants": len(results),
+            }
+
+    return best or {
+        "ok": True,
+        "variant": "original",
+        "text": "",
+        "rawText": "",
+        "ocrVariants": 0,
+    }
+
+
 def recognize_chat(image: np.ndarray) -> dict[str, str | bool]:
     engine = get_ocr_engine()
-    result = engine(image)
-    raw_text = "\n".join(_extract_lines(result))
-    return {
-        "ok": True,
-        "text": clean_chat_text(raw_text),
-        "rawText": raw_text,
-    }
+    original_result = engine(image)
+    enhanced = enhance_chat_text_image(image)
+    enhanced_result = engine(enhanced)
+    return select_best_chat_ocr_result(
+        [
+            {"variant": "original", "rawText": "\n".join(_extract_lines(original_result))},
+            {"variant": "enhanced", "rawText": "\n".join(_extract_lines(enhanced_result))},
+        ]
+    )

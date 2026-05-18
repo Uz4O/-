@@ -52,6 +52,20 @@ describe('AI assisted bet parsing helpers', () => {
     assert.equal(result.candidate.mode, 'zodiacFushi');
   });
 
+  it('validates a manual correction sample with OCR zodiac typo fixed', () => {
+    const result = validateAiBetCandidate({
+      mode: 'zodiacFushi',
+      normalizedText: '虎兔龙蛇复四三各50',
+      reason: '人工修正',
+      modelUsed: 'manual',
+      warnings: [],
+    });
+
+    assert.equal(result.status, 'needs_confirm');
+    assert.match(result.formula, /C\(4,3\).*50/);
+    assert.equal(result.betAmount, 200);
+  });
+
   it('marks AI candidates unresolved when the normalized text cannot be parsed', () => {
     const result = validateAiBetCandidate({
       mode: 'pingma',
@@ -369,6 +383,41 @@ describe('parseBetGroups', () => {
     assert.equal(groups.reduce((sum, group) => sum + group.betAmount, 0), 1250);
   });
 
+  it('解析平码逗号分隔的 slash 金额', () => {
+    const groups = parseBetGroups('1,2,3/100', 'pingma');
+
+    assert.deepEqual(groups.map((group) => group.numbers), [['01', '02', '03']]);
+    assert.deepEqual(groups.map((group) => group.amountPerNumber), [100]);
+    assert.equal(groups.reduce((sum, group) => sum + group.betAmount, 0), 300);
+  });
+
+  it('解析平码多点号和中文标点混合分隔', () => {
+    const groups = parseBetGroups('1.2....3。4/50', 'pingma');
+
+    assert.deepEqual(groups.map((group) => group.numbers), [['01', '02', '03', '04']]);
+    assert.equal(groups.reduce((sum, group) => sum + group.betAmount, 0), 200);
+  });
+
+  it('解析平码横杆分隔的 slash 金额', () => {
+    const groups = parseBetGroups('1-2-3-4/20', 'pingma');
+
+    assert.deepEqual(groups.map((group) => group.numbers), [['01', '02', '03', '04']]);
+    assert.equal(groups.reduce((sum, group) => sum + group.betAmount, 0), 80);
+  });
+
+  it('解析平码中文各金额前的混合标点号码', () => {
+    const groups = parseBetGroups('01，02，03各100', 'pingma');
+
+    assert.deepEqual(groups.map((group) => group.numbers), [['01', '02', '03']]);
+    assert.equal(groups.reduce((sum, group) => sum + group.betAmount, 0), 300);
+  });
+
+  it('平码 slash 金额后仍有无金额号码时不自动计入', () => {
+    const groups = parseBetGroups('01.02.03/100 04.05', 'pingma');
+
+    assert.deepEqual(groups, []);
+  });
+
   it('解析连码手工组合', () => {
     const groups = parseBetGroups('46.47\n4.14\n24.32\n5.9二中二出50', 'lianma');
 
@@ -403,6 +452,40 @@ describe('parseBetGroups', () => {
     assert.deepEqual(groups[0].numbers, ['23', '22', '27', '06', '01', '02', '03']);
     assert.equal(groups[0].comboCount, 35);
     assert.equal(groups[0].betAmount, 700);
+  });
+
+  it('解析真实失败样本中的平码多号码共用金额', () => {
+    const groups = parseBetGroups('05号16号27号一个号各下40元', 'pingma');
+
+    assert.deepEqual(groups.map((group) => group.numbers), [['05', '16', '27']]);
+    assert.equal(groups.reduce((sum, group) => sum + group.betAmount, 0), 120);
+  });
+
+  it('解析真实失败样本中的三中三每组金额', () => {
+    const groups = parseBetGroups('06.18.29\n12.25.44\n03.17.39三中三每组40', 'lianma');
+
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0].comboType, '三中三');
+    assert.equal(groups[0].comboCount, 3);
+    assert.equal(groups[0].betAmount, 120);
+  });
+
+  it('解析真实失败样本中的二中二出金额', () => {
+    const groups = parseBetGroups('09.14\n27.33\n05.42二中二出60', 'lianma');
+
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0].comboType, '二中二');
+    assert.equal(groups[0].comboCount, 3);
+    assert.equal(groups[0].betAmount, 180);
+  });
+
+  it('解析真实失败样本中的生肖一个号金额', () => {
+    const groups = parseBetGroups('鸡马虎龙猴蛇\n一个号20', 'zodiacFushi');
+
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0].comboType, '三中三');
+    assert.equal(groups[0].comboCount, 20);
+    assert.equal(groups[0].betAmount, 400);
   });
 
   it('按二中二口径解析复式特碰任意两两组合', () => {

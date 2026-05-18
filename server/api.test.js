@@ -360,4 +360,180 @@ describe('AI assisted bet parsing api', () => {
     assert.equal(result.response.status, 503);
     assert.match(result.body.error, /JSON/);
   });
+
+  it('requires a license session for saving parsing samples', async () => {
+    app = createApp({
+      env: {
+        ADMIN_PASSWORD: 'admin-pass',
+        LICENSE_SECRET: 'license-secret',
+        LICENSE_DATA_FILE: path.join(tempDir, 'license-cards.json'),
+        LOTTERY_SYNC_DISABLED: '1',
+      },
+    });
+
+    const result = await request('POST', '/api/parsing-samples', {
+      body: {
+        sourceText: '虎免龙蛇复四三各五十',
+        mode: 'zodiacFushi',
+        normalizedText: '虎兔龙蛇复四三各50',
+        formula: 'C(4,3) × 50 = 200',
+        createdFrom: 'manual_fix',
+      },
+    });
+
+    assert.equal(result.response.status, 401);
+    assert.equal(result.body.reason, 'missing_session');
+  });
+
+  it('saves valid parsing samples after backend validation', async () => {
+    const samplesPath = path.join(tempDir, 'parsing-samples.json');
+    const headers = await createLicensedHeaders({ PARSING_SAMPLES_FILE: samplesPath });
+
+    const result = await request('POST', '/api/parsing-samples', {
+      headers,
+      body: {
+        sourceText: '虎免龙蛇复四三各五十',
+        mode: 'zodiacFushi',
+        normalizedText: '虎兔龙蛇复四三各50',
+        formula: 'C(4,3) × 50 = 200',
+        createdFrom: 'manual_fix',
+      },
+    });
+
+    assert.equal(result.response.status, 200);
+    assert.equal(result.body.ok, true);
+    assert.equal(result.body.sample.normalizedText, '虎兔龙蛇复四三各50');
+  });
+
+  it('rejects invalid parsing sample modes and normalized text', async () => {
+    const samplesPath = path.join(tempDir, 'parsing-samples.json');
+    const headers = await createLicensedHeaders({ PARSING_SAMPLES_FILE: samplesPath });
+
+    const invalidMode = await request('POST', '/api/parsing-samples', {
+      headers,
+      body: {
+        sourceText: '虎免龙蛇复四三各五十',
+        mode: 'unknown',
+        normalizedText: '虎兔龙蛇复四三各50',
+        formula: '',
+        createdFrom: 'manual_fix',
+      },
+    });
+    const invalidText = await request('POST', '/api/parsing-samples', {
+      headers,
+      body: {
+        sourceText: '看不懂',
+        mode: 'pingma',
+        normalizedText: '这句没有金额',
+        formula: '',
+        createdFrom: 'manual_fix',
+      },
+    });
+
+    assert.equal(invalidMode.response.status, 400);
+    assert.equal(invalidText.response.status, 400);
+  });
+
+  it('injects recent manual parsing samples into the DeepSeek prompt', async () => {
+    const samplesPath = path.join(tempDir, 'parsing-samples.json');
+    let prompt = '';
+    const deepseekFetch = async (_url, options) => {
+      const body = JSON.parse(options.body);
+      prompt = body.messages.find((message) => message.role === 'user')?.content || '';
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  items: [
+                    {
+                      sourceText: '虎免龙蛇复四三各五十',
+                      candidates: [
+                        {
+                          mode: 'zodiacFushi',
+                          normalizedText: '虎兔龙蛇复四三各50',
+                          reason: '参考人工修正样本',
+                          confidence: 0.94,
+                        },
+                      ],
+                    },
+                  ],
+                }),
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    };
+    const headers = await createLicensedHeaders({ DEEPSEEK_API_KEY: 'test-key', PARSING_SAMPLES_FILE: samplesPath }, deepseekFetch);
+
+    await request('POST', '/api/parsing-samples', {
+      headers,
+      body: {
+        sourceText: '虎免龙蛇复四三各五十',
+        mode: 'zodiacFushi',
+        normalizedText: '虎兔龙蛇复四三各50',
+        formula: 'C(4,3) × 50 = 200',
+        createdFrom: 'manual_fix',
+      },
+    });
+    const result = await request('POST', '/api/assist-bet-parsing', {
+      headers,
+      body: { sourceTexts: ['虎免龙蛇复四三各五十'], modeTexts: {} },
+    });
+
+    assert.equal(result.response.status, 200);
+    assert.match(prompt, /历史人工修正样本/);
+    assert.match(prompt, /虎免龙蛇复四三各五十/);
+    assert.match(prompt, /虎兔龙蛇复四三各50/);
+  });
+
+  it('instructs AI to normalize pingma separator formats without guessing missing amounts', async () => {
+    let prompt = '';
+    const deepseekFetch = async (_url, options) => {
+      const body = JSON.parse(options.body);
+      prompt = body.messages.find((message) => message.role === 'user')?.content || '';
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  items: [
+                    {
+                      sourceText: '1，2....3各100',
+                      candidates: [
+                        {
+                          mode: 'pingma',
+                          normalizedText: '01.02.03/100',
+                          reason: '平码多分隔符统一为 slash 金额格式',
+                          confidence: 0.95,
+                        },
+                      ],
+                    },
+                  ],
+                }),
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    };
+    const headers = await createLicensedHeaders({ DEEPSEEK_API_KEY: 'test-key' }, deepseekFetch);
+
+    const result = await request('POST', '/api/assist-bet-parsing', {
+      headers,
+      body: { sourceTexts: ['1，2....3各100'], modeTexts: {} },
+    });
+
+    assert.equal(result.response.status, 200);
+    assert.match(prompt, /01\.02\.03\/100/);
+    assert.match(prompt, /无金额不猜测/);
+    assert.equal(result.body.items[0].status, 'needs_confirm');
+    assert.equal(result.body.items[0].candidates[0].normalizedText, '01.02.03/100');
+    assert.equal(result.body.items[0].candidates[0].betAmount, 300);
+  });
 });

@@ -14,6 +14,13 @@ describe('result page styles', () => {
   it('does not hide the fourth-page amount summary inside the control column', () => {
     assert.equal(/\.control-column\s*>\s*\.quick-summary\s*\{\s*display:\s*none\s*;?\s*\}/.test(styles), false);
   });
+
+  it('shows OCR transcript in a bounded fourth-page panel', () => {
+    assert.match(styles, /\.ocr-transcript-panel\s*\{/);
+    assert.match(getRule('.ocr-transcript-text'), /max-height\s*:\s*220px\s*;/);
+    assert.match(getRule('.ocr-transcript-text'), /overflow\s*:\s*auto\s*;/);
+    assert.match(getRule('.ocr-transcript-text'), /white-space\s*:\s*pre-wrap\s*;/);
+  });
 });
 
 describe('mobile-first workbench layout styles', () => {

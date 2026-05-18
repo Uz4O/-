@@ -1,4 +1,5 @@
 import { parseBetGroups, validateAiBetCandidate } from '../src/lib/lottery.js';
+import { getRecentParsingSamples } from './parsingSamples.js';
 
 const defaultBaseUrl = 'https://api.deepseek.com';
 const defaultFlashModel = 'deepseek-v4-flash';
@@ -34,17 +35,37 @@ function normalizeSourceTexts(sourceTexts, modeTexts) {
   return [...new Set(texts)].slice(0, 30);
 }
 
-function buildPrompt(sourceTexts, modeTexts) {
+function formatParsingSamplesForPrompt(samples = []) {
+  if (!samples.length) return '';
+
+  const lines = ['历史人工修正样本：'];
+  samples.slice(0, 10).forEach((sample, index) => {
+    lines.push(
+      `${index + 1}. 原文：${String(sample.sourceText || '').slice(0, 160)}`,
+      `   模式：${sample.mode}`,
+      `   规范文本：${String(sample.normalizedText || '').slice(0, 160)}`,
+      `   公式：${String(sample.formula || '').slice(0, 120)}`,
+    );
+  });
+  return lines.join('\n');
+}
+
+function buildPrompt(sourceTexts, modeTexts, parsingSamples = []) {
+  const samplePrompt = formatParsingSamplesForPrompt(parsingSamples);
   return [
     '你是六合彩投注文本标准化助手。只处理无法被规则确定分类或可能有多解释冲突的投注文本。',
     '不要计算最终金额，不要编造投注，不要输出 Markdown。',
     '你只能输出 JSON object，格式：{"items":[{"sourceText":"原文","needsPro":false,"candidates":[{"mode":"pingma|lianma|numberFushi|zodiacFushi","normalizedText":"本地规则可解析的规范文本","reason":"简短理由","confidence":0.0,"warnings":[]}]}]}',
     'mode 只能是 pingma、lianma、numberFushi、zodiacFushi。',
     'normalizedText 必须保留号码、生肖、玩法、金额。无法判断或多解释冲突时 candidates 为空，并设置 needsPro true。',
+    '平码规则：mode=pingma 时 normalizedText 固定输出为 01.02.03/100 这种 slash 格式；号码必须补零为 01-49；逗号、句号、横杆、多点号、空格、换行都只是号码分隔符。',
+    '平码金额规则：/100、各100、各下100、各押100、各买100 都表示前面同一组号码每个号 100；一个金额只作用于它前面同一组号码；如果有号码无金额不猜测，candidates 为空并设置 needsPro true。',
+    '平码示例：原文 1，2....3各100 => normalizedText 01.02.03/100；原文 1-2-3-4/20 => normalizedText 01.02.03.04/20；原文 01.02.03/100 04.05 因 04.05 无金额不猜测。',
     '常见规范文本示例：平特一肖牛买1200；21.47.12.36各50；46.47\\n5.9二中二出50；鸡马虎龙猴蛇\\n一个号20。',
+    samplePrompt,
     `待处理原文：${JSON.stringify(sourceTexts)}`,
     `当前输入框文本：${JSON.stringify(modeTexts || {})}`,
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 function shouldUsePro(aiPayload, validatedItems) {
@@ -110,7 +131,7 @@ function validateAiPayload(aiPayload, modelUsed) {
   });
 }
 
-async function callDeepSeek({ env, fetchImpl, model, sourceTexts, modeTexts }) {
+async function callDeepSeek({ env, fetchImpl, model, sourceTexts, modeTexts, parsingSamples = [] }) {
   const apiKey = String(env.DEEPSEEK_API_KEY || '').trim();
   if (!apiKey) throw new Error('未配置 DEEPSEEK_API_KEY，无法使用 AI 辅助解析');
 
@@ -131,7 +152,7 @@ async function callDeepSeek({ env, fetchImpl, model, sourceTexts, modeTexts }) {
         },
         {
           role: 'user',
-          content: buildPrompt(sourceTexts, modeTexts),
+          content: buildPrompt(sourceTexts, modeTexts, parsingSamples),
         },
       ],
       temperature: 0.1,
@@ -148,12 +169,13 @@ async function callDeepSeek({ env, fetchImpl, model, sourceTexts, modeTexts }) {
   return parseJsonObject(content, model);
 }
 
-async function assistBetParsing({ env, fetchImpl = fetch, sourceTexts = [], modeTexts = {} }) {
+async function assistBetParsing({ env, fetchImpl = fetch, sourceTexts = [], modeTexts = {}, parsingSamplesPath = '' }) {
   const normalizedSourceTexts = normalizeSourceTexts(sourceTexts, modeTexts);
   if (!normalizedSourceTexts.length) {
     return { ok: true, modelUsed: '', items: [] };
   }
 
+  const parsingSamples = parsingSamplesPath ? await getRecentParsingSamples(parsingSamplesPath, 8) : [];
   const flashModel = env.DEEPSEEK_FLASH_MODEL || defaultFlashModel;
   const proModel = env.DEEPSEEK_PRO_MODEL || defaultProModel;
   const flashPayload = await callDeepSeek({
@@ -162,6 +184,7 @@ async function assistBetParsing({ env, fetchImpl = fetch, sourceTexts = [], mode
     model: flashModel,
     sourceTexts: normalizedSourceTexts,
     modeTexts,
+    parsingSamples,
   });
   const flashItems = validateAiPayload(flashPayload, flashModel);
 
@@ -175,6 +198,7 @@ async function assistBetParsing({ env, fetchImpl = fetch, sourceTexts = [], mode
     model: proModel,
     sourceTexts: normalizedSourceTexts,
     modeTexts,
+    parsingSamples,
   });
   return {
     ok: true,
@@ -183,4 +207,4 @@ async function assistBetParsing({ env, fetchImpl = fetch, sourceTexts = [], mode
   };
 }
 
-export { assistBetParsing };
+export { assistBetParsing, buildPrompt };

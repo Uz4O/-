@@ -1,7 +1,7 @@
 import unittest
 
 
-from ocr_service.chat_recognizer import clean_chat_text
+from ocr_service.chat_recognizer import clean_chat_text, select_best_chat_ocr_result
 
 
 class CleanChatTextTest(unittest.TestCase):
@@ -82,6 +82,21 @@ class CleanChatTextTest(unittest.TestCase):
         )
 
         self.assertEqual(clean_chat_text(raw_text).splitlines(), raw_text.splitlines())
+
+    def test_prefers_enhanced_result_when_it_has_more_bet_lines(self):
+        original = "文件传输助手\n10号20号各下"
+        enhanced = "文件传输助手\n10号20号各下50元\n03.17.39三中三每组40"
+
+        best = select_best_chat_ocr_result(
+            [
+                {"variant": "original", "rawText": original},
+                {"variant": "enhanced", "rawText": enhanced},
+            ]
+        )
+
+        self.assertEqual(best["variant"], "enhanced")
+        self.assertEqual(best["text"].splitlines(), ["10号20号各下50元", "03.17.39三中三每组40"])
+        self.assertEqual(best["ocrVariants"], 2)
 
 
 if __name__ == "__main__":

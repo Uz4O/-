@@ -233,14 +233,25 @@ function normalizeSlashNumberBeforeAmount(text) {
   );
 }
 
+function hasUnpricedNumberTail(text) {
+  const tail = String(text || '')
+    .replace(/[。．，,；;]/g, '.')
+    .trim();
+  if (!tail) return false;
+  if (/(?:\/|各下|各押|各买|各|下|押|买)\s*(?:\d|[零一二两三四五六七八九十百佰])/.test(tail)) return false;
+  return parseBetNumbers(tail).length > 0;
+}
+
 function parseSlashBetGroups(line, lineIndex, userName) {
   const groups = [];
   const groupPattern = /([^/\r\n]+?)\/\s*(\d+)/g;
   let match;
+  let lastAmountEnd = 0;
 
   while ((match = groupPattern.exec(line)) !== null) {
     const numbers = parseBetNumbers(match[1]);
     const amountPerNumber = Number(match[2]);
+    lastAmountEnd = groupPattern.lastIndex;
 
     if (!numbers.length || !amountPerNumber) continue;
 
@@ -252,6 +263,8 @@ function parseSlashBetGroups(line, lineIndex, userName) {
       betAmount: numbers.length * amountPerNumber,
     });
   }
+
+  if (groups.length && hasUnpricedNumberTail(line.slice(lastAmountEnd))) return [];
 
   return groups;
 }
@@ -294,10 +307,12 @@ function parseMultilineSlashBetGroups(rawText) {
   const groups = [];
   const groupPattern = /([^/\r\n]+?)\/\s*(\d+)/g;
   let match;
+  let lastAmountEnd = 0;
 
   while ((match = groupPattern.exec(normalizedText)) !== null) {
     const numbers = parseBetNumbers(match[1]);
     const amountPerNumber = Number(match[2]);
+    lastAmountEnd = groupPattern.lastIndex;
 
     if (!numbers.length || !amountPerNumber) continue;
 
@@ -309,6 +324,8 @@ function parseMultilineSlashBetGroups(rawText) {
       betAmount: numbers.length * amountPerNumber,
     });
   }
+
+  if (groups.length && hasUnpricedNumberTail(normalizedText.slice(lastAmountEnd))) return [];
 
   return groups;
 }
@@ -359,7 +376,7 @@ function parseChineseBetGroups(line, lineIndex, userName) {
   const groups = [];
   const normalizedLine = normalizeSlashNumberBeforeAmount(line);
   const groupPattern =
-    /([^，,。；;\r\n]+?)\s*(?:一个号|个号|每个号|每号|各号)?\s*(?:各下|各押|各买|各|下|押|买)\s*(\d+(?:\.\d+)?)\s*元?/g;
+    /([^。；;\r\n]+?)\s*(?:一个号|个号|每个号|每号|各号)?\s*(?:各下|各押|各买|各|下|押|买)\s*(\d+(?:\.\d+)?)\s*元?/g;
   let match;
 
   while ((match = groupPattern.exec(normalizedLine)) !== null) {
