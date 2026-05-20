@@ -33,6 +33,19 @@ const initialModeTexts = {
 const unsupportedComboTypes = new Set(['二中三']);
 const zodiacChars = '鼠牛虎兔龙蛇马羊猴鸡狗猪';
 const zodiacInputChars = `${zodiacChars}侯`;
+const currentYearZodiac = '马';
+const lianxiaoOdds = {
+  2: { normal: 4, currentYear: 3.4 },
+  3: { normal: 11, currentYear: 9 },
+  4: { normal: 31, currentYear: 28 },
+  5: { normal: 100, currentYear: 85 },
+};
+const lianxiaoPickLabels = {
+  2: '二连肖',
+  3: '三连肖',
+  4: '四连肖',
+  5: '五连肖',
+};
 const chineseDigitMap = {
   零: 0,
   一: 1,
@@ -681,6 +694,49 @@ function getComboMeta(comboType) {
   return null;
 }
 
+function parseLianxiaoBetGroups(line, lineIndex, userName) {
+  const normalizedLine = normalizeZodiacText(line).replace(/\s+/g, '');
+  const match = normalizedLine.match(
+    new RegExp(`([二两三四五])连肖[，,。；;、.]*([${zodiacChars}]+)[，,。；;、.]*(\\d+(?:\\.\\d+)?|[零一二两三四五六七八九十百佰]+)元?$`),
+  );
+  if (!match) return [];
+
+  const pickCount = parseChineseInteger(match[1]);
+  const oddsConfig = lianxiaoOdds[pickCount];
+  if (!oddsConfig) return [];
+
+  const zodiacs = [...new Set(Array.from(match[2]).filter((char) => zodiacChars.includes(char)))];
+  const amountPerGroup = parseChineseInteger(match[3]);
+  if (zodiacs.length !== pickCount || !amountPerGroup) return [];
+
+  const includesCurrentYearZodiac = zodiacs.includes(currentYearZodiac);
+  const odds = includesCurrentYearZodiac ? oddsConfig.currentYear : oddsConfig.normal;
+  const comboType = lianxiaoPickLabels[pickCount];
+
+  return [
+    {
+      id: `${lineIndex}-lianxiao-0`,
+      userName,
+      numbers: zodiacs,
+      zodiacs,
+      manualCombos: [zodiacs],
+      amountPerNumber: amountPerGroup,
+      betAmount: amountPerGroup,
+      betLabel: comboType,
+      betMode: 'lianxiao',
+      comboType,
+      pickCount,
+      odds,
+      comboCount: 1,
+      includesCurrentYearZodiac,
+    },
+  ];
+}
+
+function isLianxiaoBetLine(line) {
+  return parseLianxiaoBetGroups(line, 0, '').length > 0;
+}
+
 function parseComboAmount(line) {
   const amountMatch = line.match(
     /(?:每组|各组|一组|每一组|各一组|出|组|各|下|押|买)\s*(\d+(?:\.\d+)?)\s*元?\s*$|(\d+(?:\.\d+)?)\s*元?\s*$/,
@@ -728,7 +784,7 @@ function parseZodiacFushiBetGroups(line, lineIndex, userName) {
 
 function parseManualComboBlocks(rawText) {
   const lines = rawText.split(/\r?\n/);
-  const groups = [];
+  const groups = lines.flatMap((line, lineIndex) => parseLianxiaoBetGroups(line.trim(), lineIndex, `第${lineIndex + 1}行`));
   let pendingCombos = [];
   let blockStartIndex = 0;
 
@@ -925,7 +981,9 @@ function calculateLotteryResult(input) {
     .map((group) => ({
       ...group,
       hitCount:
-        group.zodiacs && group.manualCombos
+        group.betMode === 'lianxiao'
+          ? group.zodiacs.filter((zodiac) => drawnZodiacs.includes(zodiac)).length
+          : group.zodiacs && group.manualCombos
           ? group.manualCombos.filter((combo) => combo.filter((zodiac) => drawnZodiacs.includes(zodiac)).length >= group.pickCount)
               .length
           : group.betMode === 'manual-combo'
@@ -938,7 +996,11 @@ function calculateLotteryResult(input) {
           ? group.zodiacs.filter((zodiac) => drawnZodiacs.includes(zodiac)).length
           : group.numbers.filter((number) => number === drawNumber).length,
       winComboCount:
-        group.zodiacs && group.manualCombos
+        group.betMode === 'lianxiao'
+          ? group.zodiacs.every((zodiac) => drawnZodiacs.includes(zodiac))
+            ? 1
+            : 0
+          : group.zodiacs && group.manualCombos
           ? group.manualCombos.filter((combo) => combo.filter((zodiac) => drawnZodiacs.includes(zodiac)).length >= group.pickCount)
               .length
           : group.betMode === 'manual-combo'
@@ -950,7 +1012,9 @@ function calculateLotteryResult(input) {
           : 0,
     }))
     .filter((group) =>
-      group.betMode === 'fushi' || group.betMode === 'manual-combo' ? group.winComboCount > 0 : group.hitCount > 0,
+      group.betMode === 'fushi' || group.betMode === 'manual-combo' || group.betMode === 'lianxiao'
+        ? group.winComboCount > 0
+        : group.hitCount > 0,
     )
     .map((group) => ({
       id: group.id,
@@ -958,13 +1022,15 @@ function calculateLotteryResult(input) {
       hitContent:
         group.betMode === 'fushi'
           ? `复式${group.comboType}，${group.numbers.length}码共${group.comboCount}组，命中${group.hitCount}码/${group.winComboCount}组，${group.amountPerNumber}一组`
+          : group.betMode === 'lianxiao'
+          ? `${group.comboType}，${group.zodiacs.join('')}，命中${group.hitCount}肖，${group.amountPerNumber}一组，${group.odds}倍`
           : group.zodiacs && group.manualCombos
           ? `生肖${group.comboType}，${group.zodiacs.join('')}共${group.comboCount}组，命中${group.winComboCount}组，${group.amountPerNumber}一组`
           : group.betMode === 'manual-combo'
           ? `连码${group.comboType}，列出${group.comboCount}组，命中${group.winComboCount}组，${group.amountPerNumber}一组`
           : `${drawNumber}号 / ${input.drawZodiac}，${group.betLabel ? `${group.betLabel}肖，` : ''}命中${group.hitCount}码，${group.numbers.length}码各${group.amountPerNumber}`,
       winAmount:
-        group.betMode === 'fushi' || group.betMode === 'manual-combo'
+        group.betMode === 'fushi' || group.betMode === 'manual-combo' || group.betMode === 'lianxiao'
           ? group.winComboCount * group.amountPerNumber * group.odds
           : group.hitCount * group.amountPerNumber * 47,
     }));
@@ -1519,6 +1585,7 @@ function classifyBetText(rawText) {
     const comboType = normalizeComboType(normalizedLine);
     const numbers = parseBetNumbers(normalizedLine);
     const hasAmount = parseComboAmount(normalizedLine) > 0;
+    const isLianxiaoLine = isLianxiaoBetLine(normalizedLine);
     const isZodiacFushiLine = parseZodiacFushiBetGroups(normalizedLine, 0, '').length > 0;
     const isZodiacPingteLine = parseZodiacPingteBetGroups(normalizedLine, 0, '').length > 0;
     const isUnsupportedComboLine = unsupportedComboTypes.has(comboType);
@@ -1543,6 +1610,15 @@ function classifyBetText(rawText) {
       /(?:各下|各押|各买|各|下|押|买)$/.test(previousPingmaLine);
 
     if (line === '0' && !continuesSlashAmountLine) {
+      return;
+    }
+
+    if (isLianxiaoLine) {
+      flushPendingAmbiguousComboLines('pingma');
+      flushPendingLianma();
+      flushPendingFushiHeader();
+      append('lianma', line);
+      currentMode = 'lianma';
       return;
     }
 

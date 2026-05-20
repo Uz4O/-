@@ -18,4 +18,11 @@ describe('OCR image preparation flow', () => {
     assert.match(chatHandler, /prepareChatImageForRecognition\(source\.file\)/);
     assert.match(chatHandler, /使用原图并在 OCR 服务端清晰化/);
   });
+  it('caps chat OCR images by dimensions before upload', () => {
+    const helper = appSource.match(/async function prepareChatImageForRecognition\(file\) \{([\s\S]*?)async function readJsonResponse/)?.[1] || '';
+
+    assert.match(helper, /maxRawSide = 3200/);
+    assert.match(helper, /image\.naturalWidth <= maxRawSide/);
+    assert.match(helper, /image\.naturalHeight <= maxRawSide/);
+  });
 });

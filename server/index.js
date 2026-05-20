@@ -56,7 +56,7 @@ export function createApp({ env = process.env, deepseekFetch = fetch } = {}) {
   const app = express();
   const port = Number(env.PORT || 8787);
   const ocrServiceUrl = env.OCR_SERVICE_URL || `http://127.0.0.1:${env.OCR_PORT || 8791}`;
-  const ocrTimeoutMs = Number(env.OCR_TIMEOUT_MS || 90000);
+  const ocrTimeoutMs = Number(env.OCR_TIMEOUT_MS || 300000);
   const maxImageMb = Number(env.MAX_IMAGE_MB || 12);
   const ocrAccessToken = env.OCR_ACCESS_TOKEN || '';
   const ocrRateLimitWindowMs = Number(env.OCR_RATE_LIMIT_WINDOW_MS || 60000);
@@ -539,7 +539,7 @@ export function createApp({ env = process.env, deepseekFetch = fetch } = {}) {
 
       res.json({
         ok: response.ok && Boolean(ocr.ok),
-        provider: 'rapidocr',
+        provider: 'paddleocr',
         api: 'ok',
         ocr: response.ok ? 'ok' : 'error',
         ocrServiceUrl,
@@ -547,7 +547,7 @@ export function createApp({ env = process.env, deepseekFetch = fetch } = {}) {
     } catch (error) {
       res.status(503).json({
         ok: false,
-        provider: 'rapidocr',
+        provider: 'paddleocr',
         api: 'ok',
         ocr: 'unavailable',
         error: error instanceof Error ? error.message : 'OCR 服务不可用',

@@ -1,7 +1,7 @@
 fastapi
 uvicorn[standard]
-rapidocr
-onnxruntime
+paddleocr==3.5.0
+paddlepaddle==3.2.2
 opencv-python-headless
 numpy
 pillow

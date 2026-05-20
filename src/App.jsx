@@ -136,15 +136,27 @@ async function compressImageForRecognition(file, options = {}) {
 
 async function prepareChatImageForRecognition(file) {
   const maxRawBytes = 8 * 1024 * 1024;
+  const maxRawSide = 3200;
+  const imageUrl = URL.createObjectURL(file);
 
-  if (file.size > 0 && file.size <= maxRawBytes) {
-    return {
-      imageBase64: await fileToBase64(file),
-      mimeType: file.type || 'image/png',
-      originalSize: file.size,
-      compressedSize: file.size,
-      strategy: 'original',
-    };
+  try {
+    const image = await loadImage(imageUrl);
+    if (
+      file.size > 0 &&
+      file.size <= maxRawBytes &&
+      image.naturalWidth <= maxRawSide &&
+      image.naturalHeight <= maxRawSide
+    ) {
+      return {
+        imageBase64: await fileToBase64(file),
+        mimeType: file.type || 'image/png',
+        originalSize: file.size,
+        compressedSize: file.size,
+        strategy: 'original',
+      };
+    }
+  } finally {
+    URL.revokeObjectURL(imageUrl);
   }
 
   return {

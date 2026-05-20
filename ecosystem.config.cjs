@@ -8,6 +8,7 @@ module.exports = {
         NODE_ENV: 'production',
         PORT: '8787',
         OCR_SERVICE_URL: 'http://127.0.0.1:8791',
+        OCR_TIMEOUT_MS: '300000',
       },
     },
     {

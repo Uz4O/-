@@ -66,6 +66,19 @@ describe('AI assisted bet parsing helpers', () => {
     assert.equal(result.betAmount, 200);
   });
 
+  it('validates normalized AI candidate text expanded from tail-number shorthand', () => {
+    const result = validateAiBetCandidate({
+      mode: 'pingma',
+      normalizedText: '03.13.23.33.43.09.19.29.39.49/10',
+      reason: '三九尾一个各十元表示3尾和9尾每个号码各10元',
+      modelUsed: 'deepseek-v4-flash',
+    });
+
+    assert.equal(result.status, 'needs_confirm');
+    assert.equal(result.betAmount, 100);
+    assert.equal(result.groupCount, 1);
+  });
+
   it('marks AI candidates unresolved when the normalized text cannot be parsed', () => {
     const result = validateAiBetCandidate({
       mode: 'pingma',
@@ -540,6 +553,17 @@ describe('parseBetGroups', () => {
     assert.equal(groups[0].betAmount, 200);
   });
 
+  it('解析连肖玩法投注', () => {
+    const groups = parseBetGroups('三连肖，鼠猴羊，100', 'lianma');
+
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0].betMode, 'lianxiao');
+    assert.equal(groups[0].comboType, '三连肖');
+    assert.deepEqual(groups[0].zodiacs, ['鼠', '猴', '羊']);
+    assert.equal(groups[0].betAmount, 100);
+    assert.equal(groups[0].odds, 11);
+  });
+
   it('生肖复式也把候和侯当作猴', () => {
     const groups = parseBetGroups('羊鸡猪侯复四三各五十\n羊鸡猪候复四三各五十', 'zodiacFushi');
 
@@ -662,6 +686,51 @@ describe('calculateLotteryResult', () => {
     assert.equal(result.winners.length, 1);
     assert.match(result.winners[0].hitContent, /生肖复四三/);
     assert.match(result.winners[0].hitContent, /命中1组/);
+  });
+
+  it('按三连肖普通赔率计算中奖金额', () => {
+    const result = calculateLotteryResult({
+      betMode: 'lianma',
+      rawText: '三连肖，鼠猴羊，100',
+      drawNumber: '07',
+      extraDrawNumbers: '11.12.02.03.04.05',
+      drawZodiac: '鼠',
+    });
+
+    assert.equal(result.summary.totalBetAmount, 100);
+    assert.equal(result.summary.totalWinAmount, 1100);
+    assert.equal(result.winners.length, 1);
+    assert.match(result.winners[0].hitContent, /三连肖/);
+    assert.match(result.winners[0].hitContent, /11倍/);
+  });
+
+  it('连肖包含本命生肖时按低赔率计算中奖金额', () => {
+    const result = calculateLotteryResult({
+      betMode: 'lianma',
+      rawText: '三连肖，鼠猴马，100',
+      drawNumber: '07',
+      extraDrawNumbers: '11.01.02.03.04.05',
+      drawZodiac: '鼠',
+    });
+
+    assert.equal(result.summary.totalBetAmount, 100);
+    assert.equal(result.summary.totalWinAmount, 900);
+    assert.equal(result.winners.length, 1);
+    assert.match(result.winners[0].hitContent, /9倍/);
+  });
+
+  it('连肖没有全部命中时不产生中奖金额', () => {
+    const result = calculateLotteryResult({
+      betMode: 'lianma',
+      rawText: '三连肖，鼠猴羊，100',
+      drawNumber: '07',
+      extraDrawNumbers: '11.02.03.04.05.06',
+      drawZodiac: '鼠',
+    });
+
+    assert.equal(result.summary.totalBetAmount, 100);
+    assert.equal(result.summary.totalWinAmount, 0);
+    assert.equal(result.winners.length, 0);
   });
 });
 
@@ -925,6 +994,13 @@ describe('classifyBetText', () => {
     assert.equal(result.zodiacFushi, '羊鸡猪牛复四三各五十');
     assert.equal(result.fushi, '');
     assert.equal(result.pingma, '平特羊又鸡各一佰');
+  });
+
+  it('把连肖玩法归类到连码模式', () => {
+    const result = classifyBetText('三连肖，鼠猴羊，100');
+
+    assert.equal(result.lianma, '三连肖.鼠猴羊.100');
+    assert.equal(parseBetGroups(result.lianma, 'lianma')[0].comboType, '三连肖');
   });
 
   it('把连写的生肖复式和平特一肖拆开分类', () => {

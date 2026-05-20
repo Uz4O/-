@@ -536,4 +536,73 @@ describe('AI assisted bet parsing api', () => {
     assert.equal(result.body.items[0].candidates[0].normalizedText, '01.02.03/100');
     assert.equal(result.body.items[0].candidates[0].betAmount, 300);
   });
+
+  it('instructs AI to normalize confirmed spoken formats into locally parseable text', async () => {
+    let prompt = '';
+    const deepseekFetch = async (_url, options) => {
+      const body = JSON.parse(options.body);
+      prompt = body.messages.find((message) => message.role === 'user')?.content || '';
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  items: [
+                    {
+                      sourceText: '蛇一码10、兔一码5块',
+                      candidates: [
+                        {
+                          mode: 'pingma',
+                          normalizedText: '蛇10\n兔5',
+                          reason: '生肖平码口语压金额转为单肖平码',
+                          confidence: 0.95,
+                        },
+                      ],
+                    },
+                    {
+                      sourceText: '42-43-44-45-46-47-48-49复试三中三每组各2块',
+                      candidates: [
+                        {
+                          mode: 'numberFushi',
+                          normalizedText: '复试三中三各2\n42.43.44.45.46.47.48.49',
+                          reason: '数字复试标题加号码池',
+                          confidence: 0.95,
+                        },
+                      ],
+                    },
+                  ],
+                }),
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    };
+    const headers = await createLicensedHeaders({ DEEPSEEK_API_KEY: 'test-key' }, deepseekFetch);
+
+    const result = await request('POST', '/api/assist-bet-parsing', {
+      headers,
+      body: {
+        sourceTexts: ['蛇一码10、兔一码5块', '42-43-44-45-46-47-48-49复试三中三每组各2块'],
+        modeTexts: {},
+      },
+    });
+
+    assert.equal(result.response.status, 200);
+    assert.match(prompt, /蛇一码10、兔一码5块 => mode=pingma normalizedText=蛇10\\n兔5/);
+    assert.match(prompt, /鸡猪猴号各二十兔蛇龙号码五十 => mode=pingma normalizedText=鸡20\\n猪20\\n猴20\\n兔50\\n蛇50\\n龙50/);
+    assert.match(prompt, /11---8026--4--各30/);
+    assert.match(prompt, /复试三中三各2\\n42\.43\.44\.45\.46\.47\.48\.49/);
+    assert.match(prompt, /鼠猴狗一各了各十元 => mode=pingma normalizedText=鼠猴狗一个号10/);
+    assert.match(prompt, /蛇号各五十 => mode=pingma normalizedText=蛇50/);
+    assert.match(prompt, /三九尾一个各十元 => mode=pingma normalizedText=03\.13\.23\.33\.43\.09\.19\.29\.39\.49\/10/);
+    assert.match(prompt, /21-47-32--13-42复式特碰每组100 => mode=numberFushi normalizedText=复式特碰每组100\\n21\.47\.32\.13\.42/);
+    assert.match(prompt, /三连肖，鼠猴羊，100 => mode=lianma normalizedText=三连肖，鼠猴羊，100/);
+    assert.equal(result.body.items[0].status, 'needs_confirm');
+    assert.equal(result.body.items[0].candidates[0].betAmount, 60);
+    assert.equal(result.body.items[1].status, 'needs_confirm');
+    assert.equal(result.body.items[1].candidates[0].betAmount, 112);
+  });
 });
