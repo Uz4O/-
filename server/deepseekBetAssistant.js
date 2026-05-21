@@ -4,6 +4,9 @@ import { getRecentParsingSamples } from './parsingSamples.js';
 const defaultBaseUrl = 'https://api.deepseek.com';
 const defaultFlashModel = 'deepseek-v4-flash';
 const defaultProModel = 'deepseek-v4-pro';
+const maxProFallbackTextLength = 180;
+const maxProFallbackLineCount = 4;
+const maxProFallbackItemCount = 3;
 
 function parseJsonObject(text, label) {
   try {
@@ -38,13 +41,13 @@ function normalizeSourceTexts(sourceTexts, modeTexts) {
 function formatParsingSamplesForPrompt(samples = []) {
   if (!samples.length) return '';
 
-  const lines = ['历史人工修正样本：'];
+  const lines = ['历史人工校正样本：'];
   samples.slice(0, 10).forEach((sample, index) => {
     lines.push(
       `${index + 1}. 原文：${String(sample.sourceText || '').slice(0, 160)}`,
       `   模式：${sample.mode}`,
       `   规范文本：${String(sample.normalizedText || '').slice(0, 160)}`,
-      `   公式：${String(sample.formula || '').slice(0, 120)}`,
+      `   校验式：${String(sample.formula || '').slice(0, 120)}`,
     );
   });
   return lines.join('\n');
@@ -53,20 +56,20 @@ function formatParsingSamplesForPrompt(samples = []) {
 function buildPrompt(sourceTexts, modeTexts, parsingSamples = []) {
   const samplePrompt = formatParsingSamplesForPrompt(parsingSamples);
   return [
-    '你是六合彩投注文本标准化助手。只处理无法被规则确定分类或可能有多解释冲突的投注文本。',
-    '不要计算最终金额，不要编造投注，不要输出 Markdown。',
+    '你是 OCR 行文本结构化助手。只处理无法被规则确定分类或可能有多解释冲突的短文本。',
+    '不要计算汇总结果，不要补造原文不存在的项目，不要输出 Markdown。',
     '你只能输出 JSON object，格式：{"items":[{"sourceText":"原文","needsPro":false,"candidates":[{"mode":"pingma|lianma|numberFushi|zodiacFushi","normalizedText":"本地规则可解析的规范文本","reason":"简短理由","confidence":0.0,"warnings":[]}]}]}',
     'mode 只能是 pingma、lianma、numberFushi、zodiacFushi。',
-    'normalizedText 必须保留号码、生肖、玩法、金额。无法判断或多解释冲突时 candidates 为空，并设置 needsPro true。',
-    '平码规则：mode=pingma 时 normalizedText 固定输出为 01.02.03/100 这种 slash 格式；号码必须补零为 01-49；逗号、句号、横杆、多点号、空格、换行都只是号码分隔符。',
-    '平码金额规则：/100、各100、各下100、各押100、各买100 都表示前面同一组号码每个号 100；一个金额只作用于它前面同一组号码；如果有号码无金额不猜测，candidates 为空并设置 needsPro true。',
-    '尾数平码规则：三尾、九尾、三九尾、3尾9尾等表示尾数对应的全部 01-49 号码，必须展开成 pingma slash 格式；0尾=10.20.30.40，1尾=01.11.21.31.41，2尾=02.12.22.32.42，3尾=03.13.23.33.43，4尾=04.14.24.34.44，5尾=05.15.25.35.45，6尾=06.16.26.36.46，7尾=07.17.27.37.47，8尾=08.18.28.38.48，9尾=09.19.29.39.49。',
-    '平码示例：原文 1，2....3各100 => normalizedText 01.02.03/100；原文 1-2-3-4/20 => normalizedText 01.02.03.04/20；原文 01.02.03/100 04.05 因 04.05 无金额不猜测。',
-    '已确认口语平码示例：蛇一码10、兔一码5块 => mode=pingma normalizedText=蛇10\\n兔5；鸡猪猴号各二十兔蛇龙号码五十 => mode=pingma normalizedText=鸡20\\n猪20\\n猴20\\n兔50\\n蛇50\\n龙50；11---8026--4--各30 / 16--44--14--38--28各10 => mode=pingma normalizedText=11.08.02.04/30\\n16.44.14.38.28/10。',
-    '已确认口语生肖平码示例：鼠猴狗一各了各十元 => mode=pingma normalizedText=鼠猴狗一个号10；蛇号各五十 => mode=pingma normalizedText=蛇50；三九尾一个各十元 => mode=pingma normalizedText=03.13.23.33.43.09.19.29.39.49/10。',
-    '数字复试示例：42-43-44-45-46-47-48-49复试三中三每组各2块 => mode=numberFushi normalizedText=复试三中三各2\\n42.43.44.45.46.47.48.49；21-47-32--13-42复式特碰每组100 => mode=numberFushi normalizedText=复式特碰每组100\\n21.47.32.13.42。',
-    '连肖示例：三连肖，鼠猴羊，100 => mode=lianma normalizedText=三连肖，鼠猴羊，100；二连肖/三连肖/四连肖/五连肖都归到 lianma。',
-    '常见规范文本示例：平特一肖牛买1200；21.47.12.36各50；46.47\\n5.9二中二出50；鸡马虎龙猴蛇\\n一个号20。',
+    'normalizedText 必须保留原文中的编号、中文类别、结构名称、尾部数值。无法判断或多解释冲突时 candidates 为空，并设置 needsPro true。',
+    'pingma 规则：mode=pingma 时 normalizedText 固定输出为 01.02.03/100 这种 slash 格式；编号必须补零为 01-49；逗号、句号、横杆、多点号、空格、换行都只是编号分隔符。',
+    'pingma 数值规则：/100、各100、每个100 都表示前面同一组编号逐项对应 100；一个数值只作用于它前面同一组编号；如果有编号缺少对应数值，不猜测，candidates 为空并设置 needsPro true。',
+    '尾数规则：三尾、九尾、三九尾、3尾9尾等表示尾数对应的全部 01-49 编号，必须展开成 pingma slash 格式；0尾=10.20.30.40，1尾=01.11.21.31.41，2尾=02.12.22.32.42，3尾=03.13.23.33.43，4尾=04.14.24.34.44，5尾=05.15.25.35.45，6尾=06.16.26.36.46，7尾=07.17.27.37.47，8尾=08.18.28.38.48，9尾=09.19.29.39.49。',
+    'pingma 示例：原文 1，2....3各100 => normalizedText 01.02.03/100；原文 1-2-3-4/20 => normalizedText 01.02.03.04/20；原文 01.02.03/100 04.05 因 04.05 缺少对应数值，不猜测。',
+    '已确认口语 pingma 示例：蛇一码10、兔一码5块 => mode=pingma normalizedText=蛇10\\n兔5；鸡猪猴号各二十兔蛇龙号码五十 => mode=pingma normalizedText=鸡20\\n猪20\\n猴20\\n兔50\\n蛇50\\n龙50；11---8026--4--各30 / 16--44--14--38--28各10 => mode=pingma normalizedText=11.08.02.04/30\\n16.44.14.38.28/10。',
+    '已确认中文类别 pingma 示例：鼠猴狗一各了各十元 => mode=pingma normalizedText=鼠猴狗一个号10；蛇号各五十 => mode=pingma normalizedText=蛇50；三九尾一个各十元 => mode=pingma normalizedText=03.13.23.33.43.09.19.29.39.49/10。',
+    'numberFushi 示例：42-43-44-45-46-47-48-49复试三中三每组各2块 => mode=numberFushi normalizedText=复试三中三各2\\n42.43.44.45.46.47.48.49；21-47-32--13-42复式特碰每组100 => mode=numberFushi normalizedText=复式特碰每组100\\n21.47.32.13.42。',
+    'lianma 示例：三连肖，鼠猴羊，100 => mode=lianma normalizedText=三连肖，鼠猴羊，100；二连肖/三连肖/四连肖/五连肖都归到 lianma。',
+    '常见规范文本示例：平特一项牛1200；21.47.12.36各50；46.47\\n5.9二中二出50；鸡马虎龙猴蛇\\n一个号20。',
     samplePrompt,
     `待处理原文：${JSON.stringify(sourceTexts)}`,
     `当前输入框文本：${JSON.stringify(modeTexts || {})}`,
@@ -74,10 +77,64 @@ function buildPrompt(sourceTexts, modeTexts, parsingSamples = []) {
 }
 
 function shouldUsePro(aiPayload, validatedItems) {
-  const items = Array.isArray(aiPayload.items) ? aiPayload.items : [];
-  if (items.some((item) => item?.needsPro === true || item?.needs_pro === true)) return true;
-  if (!validatedItems.some((item) => item.status === 'needs_confirm')) return true;
-  return validatedItems.some((item) => item.status === 'needs_mode');
+  const hasConfirmedCandidate = validatedItems.some((item) => item.status === 'needs_confirm');
+  if (!hasConfirmedCandidate) return true;
+  return validatedItems.some((item) => item.status !== 'needs_confirm');
+}
+
+function isSafeProFallbackText(text) {
+  const normalizedText = String(text || '').trim();
+  if (!normalizedText) return false;
+  if (normalizedText.length > maxProFallbackTextLength) return false;
+  return normalizedText.split(/\r?\n/).filter((line) => line.trim()).length <= maxProFallbackLineCount;
+}
+
+function collectProFallbackSourceTexts(flashItems, originalSourceTexts) {
+  const unresolvedTexts = flashItems
+    .filter((item) => item.status !== 'needs_confirm')
+    .map((item) => normalizeIssueSourceText(item))
+    .filter(Boolean);
+
+  const sourceTexts = unresolvedTexts.length ? unresolvedTexts : originalSourceTexts;
+  const fallbackTexts = [...new Set(sourceTexts.map((text) => String(text || '').trim()).filter(isSafeProFallbackText))];
+  return fallbackTexts.length <= maxProFallbackItemCount ? fallbackTexts : [];
+}
+
+function normalizeIssueSourceText(issue) {
+  return String(issue?.sourceText || issue?.source_text || '').trim();
+}
+
+function mergeAiReviewItems(primaryItems, fallbackItems) {
+  const fallbackBySource = new Map(
+    fallbackItems
+      .map((item) => [normalizeIssueSourceText(item), item])
+      .filter(([source]) => source),
+  );
+  const usedFallbackSources = new Set();
+
+  const mergedItems = primaryItems.map((item, index) => {
+    if (item.status === 'needs_confirm') return item;
+
+    const sourceText = normalizeIssueSourceText(item);
+    const fallbackItem = sourceText ? fallbackBySource.get(sourceText) : fallbackItems[index];
+    if (!fallbackItem) return item;
+
+    if (sourceText) usedFallbackSources.add(sourceText);
+    return fallbackItem.status === 'needs_confirm' || fallbackItem.status === 'needs_mode' ? fallbackItem : item;
+  });
+
+  fallbackItems.forEach((item) => {
+    const sourceText = normalizeIssueSourceText(item);
+    if (sourceText && usedFallbackSources.has(sourceText)) return;
+    if (!primaryItems.some((primary) => normalizeIssueSourceText(primary) === sourceText)) {
+      mergedItems.push(item);
+    }
+  });
+
+  return mergedItems.map((item, index) => ({
+    ...item,
+    id: `ai-issue-${index + 1}`,
+  }));
 }
 
 function validateAiPayload(aiPayload, modelUsed) {
@@ -153,7 +210,7 @@ async function callDeepSeek({ env, fetchImpl, model, sourceTexts, modeTexts, par
       messages: [
         {
           role: 'system',
-          content: '你只输出 JSON object，不直接决定最终金额。',
+          content: '你只输出 JSON object，不直接决定最终汇总结果。',
         },
         {
           role: 'user',
@@ -197,18 +254,23 @@ async function assistBetParsing({ env, fetchImpl = fetch, sourceTexts = [], mode
     return { ok: true, modelUsed: flashModel, items: flashItems };
   }
 
+  const proSourceTexts = collectProFallbackSourceTexts(flashItems, normalizedSourceTexts);
+  if (!proSourceTexts.length) {
+    return { ok: true, modelUsed: flashModel, items: flashItems };
+  }
+
   const proPayload = await callDeepSeek({
     env,
     fetchImpl,
     model: proModel,
-    sourceTexts: normalizedSourceTexts,
-    modeTexts,
+    sourceTexts: proSourceTexts,
+    modeTexts: {},
     parsingSamples,
   });
   return {
     ok: true,
     modelUsed: proModel,
-    items: validateAiPayload(proPayload, proModel),
+    items: mergeAiReviewItems(flashItems, validateAiPayload(proPayload, proModel)),
   };
 }
 

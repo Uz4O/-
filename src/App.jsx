@@ -869,18 +869,13 @@ function WorkbenchApp() {
       setWorkflowStatus('AI 处理完成，请确认异常项后进入结果页');
       setWorkbenchStep('review');
     } catch (error) {
-      const fallbackIssue = {
-        id: 'ai-error-1',
-        sourceText: sourceTexts.join('\n'),
-        status: 'unresolved',
-        message: error instanceof Error ? error.message : 'AI 辅助解析失败',
-        candidates: [],
-      };
-      setAiIssues([fallbackIssue]);
-      setAiAssistStatus(fallbackIssue.message);
+      const message = error instanceof Error ? error.message : 'AI 辅助解析失败';
+      setAiIssues([]);
+      setAiAssistStatus(message);
       setWorkflowProgress(100);
-      setWorkflowStatus('AI 处理失败，可忽略异常项后继续');
-      setWorkbenchStep('review');
+      setWorkflowStatus(`AI 处理失败：${message}。已按本地可解析内容进入结果页`);
+      setWorkbenchStep('result');
+      generateFromModeTexts(draftModeTexts, successText);
     } finally {
       setIsAiAssisting(false);
     }
@@ -1322,6 +1317,13 @@ function WorkbenchApp() {
   }
 
   async function handleRecognizeUploadedChats() {
+    return handleRecognizeUploadedChatsWithProvider();
+  }
+
+  async function handleRecognizeUploadedChatsWithProvider(options = {}) {
+    const useQwen = options.provider === 'qwen';
+    const providerLabel = useQwen ? 'Qwen AI' : 'OCR';
+    const endpoint = useQwen ? '/api/recognize-chat-qwen' : '/api/recognize-chat';
     const sources = getRecognitionSources();
     if (isWorkflowBusy) return;
     if (!sources.length) {
@@ -1354,7 +1356,7 @@ function WorkbenchApp() {
         setStatusText(`正在识别第 ${currentIndex}/${sources.length} 张聊天图，${imageStatus}`);
         setWorkflowStatus(`文字 OCR 正在识别第 ${currentIndex}/${sources.length} 张，${imageStatus}`);
 
-        const response = await postRecognitionRequest('/api/recognize-chat', {
+        const response = await postRecognitionRequest(endpoint, {
           imageBase64: preparedImage.imageBase64,
           mimeType: preparedImage.mimeType,
         });
@@ -1566,11 +1568,20 @@ function WorkbenchApp() {
                   <button
                     type="button"
                     className="ghost-button"
-                    onClick={handleRecognizeUploadedChats}
+                    onClick={() => handleRecognizeUploadedChats()}
                     disabled={isRecognizing}
                     data-label={`识别文字 · ${uploadedPhotoCount}张`}
                   >
                     识别文字 · {uploadedPhotoCount}张
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => handleRecognizeUploadedChatsWithProvider({ provider: 'qwen' })}
+                    disabled={isRecognizing}
+                    data-label={`Qwen AI · ${uploadedPhotoCount}张`}
+                  >
+                    Qwen AI · {uploadedPhotoCount}张
                   </button>
                 </div>
               )}
@@ -1629,10 +1640,18 @@ function WorkbenchApp() {
                 <button
                   type="button"
                   className="ghost-button"
-                  onClick={handleRecognizeUploadedChats}
+                  onClick={() => handleRecognizeUploadedChats()}
                   disabled={!canRecognizeUploaded || isWorkflowBusy}
                 >
                   识别文字
+                </button>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => handleRecognizeUploadedChatsWithProvider({ provider: 'qwen' })}
+                  disabled={!canRecognizeUploaded || isWorkflowBusy}
+                >
+                  Qwen AI
                 </button>
               </div>
             </div>

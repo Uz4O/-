@@ -9,6 +9,9 @@ module.exports = {
         PORT: '8787',
         OCR_SERVICE_URL: 'http://127.0.0.1:8791',
         OCR_TIMEOUT_MS: '300000',
+        QWEN_BASE_URL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        QWEN_OCR_MODEL: 'qwen-vl-ocr-latest',
+        QWEN_OCR_TIMEOUT_MS: '300000',
       },
     },
     {

@@ -25,4 +25,26 @@ describe('OCR image preparation flow', () => {
     assert.match(helper, /image\.naturalWidth <= maxRawSide/);
     assert.match(helper, /image\.naturalHeight <= maxRawSide/);
   });
+
+  it('continues to the result page when automatic AI formatting fails', () => {
+    const aiReviewHandler = appSource.match(/async function runAiReviewForDraft[\s\S]*?async function handleParseManualBetText/)?.[0] || '';
+    const catchBlock = aiReviewHandler.match(/catch \(error\) \{([\s\S]*?)\} finally/)?.[1] || '';
+
+    assert.doesNotMatch(catchBlock, /setAiIssues\(\[fallbackIssue\]\)/);
+    assert.doesNotMatch(catchBlock, /sourceTexts\.join/);
+    assert.match(catchBlock, /setAiIssues\(\[\]\)/);
+    assert.match(catchBlock, /setWorkbenchStep\('result'\)/);
+    assert.match(catchBlock, /generateFromModeTexts\(draftModeTexts,\s*successText\)/);
+  });
+
+  it('does not add browser-side timeouts to AI formatting requests', () => {
+    const fetchHelper = appSource.match(/async function fetchJson\(path, options = \{\}\) \{([\s\S]*?)function LicenseGate/)?.[1] || '';
+    const aiReviewHandler = appSource.match(/async function runAiReviewForDraft[\s\S]*?async function handleParseManualBetText/)?.[0] || '';
+    const manualAssistHandler = appSource.match(/async function handleAssistBetParsing[\s\S]*?function handleConfirmAiCandidate/)?.[0] || '';
+
+    assert.doesNotMatch(fetchHelper, /AbortController/);
+    assert.doesNotMatch(fetchHelper, /timeoutMs/);
+    assert.doesNotMatch(aiReviewHandler, /timeoutMs:/);
+    assert.doesNotMatch(manualAssistHandler, /timeoutMs:/);
+  });
 });

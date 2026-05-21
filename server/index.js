@@ -7,6 +7,7 @@ import express from 'express';
 
 import { assistBetParsing } from './deepseekBetAssistant.js';
 import { saveParsingSample } from './parsingSamples.js';
+import { recognizeChatWithQwen } from './qwenChatOcr.js';
 import {
   activateLicenseCard,
   createEmptyLicenseStore,
@@ -52,7 +53,7 @@ function jsonError(res, status, error, extra = {}) {
   res.status(status).json({ ok: false, error, ...extra });
 }
 
-export function createApp({ env = process.env, deepseekFetch = fetch } = {}) {
+export function createApp({ env = process.env, deepseekFetch = fetch, qwenFetch = fetch } = {}) {
   const app = express();
   const port = Number(env.PORT || 8787);
   const ocrServiceUrl = env.OCR_SERVICE_URL || `http://127.0.0.1:${env.OCR_PORT || 8791}`;
@@ -614,6 +615,26 @@ export function createApp({ env = process.env, deepseekFetch = fetch } = {}) {
       res.json(payload);
     } catch (error) {
       jsonError(res, 503, error instanceof Error ? error.message : 'OCR 聊天识别失败');
+    }
+  });
+
+  app.post('/api/recognize-chat-qwen', requireLicenseSession, requireOcrAccess, limitOcrRequests, async (req, res) => {
+    try {
+      const validationError = validateImagePayload(req.body);
+      if (validationError) {
+        jsonError(res, 400, validationError);
+        return;
+      }
+
+      const payload = await recognizeChatWithQwen({
+        env,
+        fetchImpl: qwenFetch,
+        imageBase64: req.body.imageBase64,
+        mimeType: req.body.mimeType,
+      });
+      res.json(payload);
+    } catch (error) {
+      jsonError(res, 503, error instanceof Error ? error.message : 'Qwen 视觉识别失败');
     }
   });
 

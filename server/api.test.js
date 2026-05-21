@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 
 import { createApp } from './index.js';
+import { buildPrompt } from './deepseekBetAssistant.js';
 
 let tempDir;
 let app;
@@ -342,6 +343,165 @@ describe('AI assisted bet parsing api', () => {
     assert.equal(result.body.items[0].candidates[0].modelUsed, 'deepseek-v4-pro');
   });
 
+  it('falls back to pro for unresolved items while keeping validated flash candidates', async () => {
+    const models = [];
+    const proBodyByModel = {};
+    const deepseekFetch = async (_url, options) => {
+      const body = JSON.parse(options.body);
+      models.push(body.model);
+      proBodyByModel[body.model] = body;
+      const payload =
+        body.model === 'deepseek-v4-flash'
+          ? {
+              items: [
+                {
+                  sourceText: '11---8026--4--各30',
+                  candidates: [
+                    {
+                      mode: 'pingma',
+                      normalizedText: '11.08.02.04/30',
+                      reason: '编号分隔符统一为 slash 格式',
+                      confidence: 0.9,
+                    },
+                  ],
+                },
+                {
+                  sourceText: '看不懂格式ABC',
+                  needsPro: true,
+                  candidates: [],
+                },
+              ],
+            }
+          : {
+              items: [
+                {
+                  sourceText: '看不懂格式ABC',
+                  candidates: [
+                    {
+                      mode: 'pingma',
+                      normalizedText: '01.02/10',
+                      reason: 'Pro 复核后给出可本地校验的候选',
+                      confidence: 0.9,
+                    },
+                  ],
+                },
+              ],
+            };
+
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: JSON.stringify(payload) } }],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    };
+    const headers = await createLicensedHeaders({ DEEPSEEK_API_KEY: 'test-key' }, deepseekFetch);
+
+    const result = await request('POST', '/api/assist-bet-parsing', {
+      headers,
+      body: {
+        sourceTexts: ['11---8026--4--各30', '看不懂格式ABC'],
+        modeTexts: {},
+      },
+    });
+
+    assert.deepEqual(models, ['deepseek-v4-flash', 'deepseek-v4-pro']);
+    assert.equal(result.response.status, 200);
+    assert.equal(result.body.items[0].sourceText, '11---8026--4--各30');
+    assert.equal(result.body.items[0].status, 'needs_confirm');
+    assert.equal(result.body.items[0].candidates[0].normalizedText, '11.08.02.04/30');
+    assert.equal(result.body.items[1].sourceText, '看不懂格式ABC');
+    assert.equal(result.body.items[1].status, 'needs_confirm');
+    assert.equal(result.body.items[1].candidates[0].modelUsed, 'deepseek-v4-pro');
+    assert.match(proBodyByModel['deepseek-v4-flash'].messages[1].content, /待处理原文：\["11---8026--4--各30","看不懂格式ABC"\]/);
+    assert.match(proBodyByModel['deepseek-v4-pro'].messages[1].content, /待处理原文：\["看不懂格式ABC"\]/);
+    assert.match(proBodyByModel['deepseek-v4-pro'].messages[1].content, /当前输入框文本：\{\}/);
+  });
+
+  it('does not send long unresolved OCR blobs to pro fallback', async () => {
+    const longBlob = `${'澳门彩特码6号10号14号20号22号26号32号36号38号44号一个号各下10元'.repeat(8)}137澳=02,05,08,11,14,17,20,23,26`;
+    const calls = [];
+    const deepseekFetch = async (_url, options) => {
+      const body = JSON.parse(options.body);
+      calls.push(body);
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  items: [
+                    {
+                      sourceText: longBlob,
+                      needsPro: true,
+                      candidates: [],
+                    },
+                  ],
+                }),
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    };
+    const headers = await createLicensedHeaders({ DEEPSEEK_API_KEY: 'test-key' }, deepseekFetch);
+
+    const result = await request('POST', '/api/assist-bet-parsing', {
+      headers,
+      body: {
+        sourceTexts: [longBlob],
+        modeTexts: { pingma: longBlob },
+      },
+    });
+
+    assert.equal(result.response.status, 200);
+    assert.deepEqual(calls.map((call) => call.model), ['deepseek-v4-flash']);
+    assert.equal(result.body.items[0].status, 'unresolved');
+  });
+
+  it('does not block bulk OCR formatting on pro fallback for many unresolved fragments', async () => {
+    const fragments = Array.from({ length: 8 }, (_, index) => `碎片${index + 1}号各十`);
+    const calls = [];
+    const deepseekFetch = async (_url, options) => {
+      const body = JSON.parse(options.body);
+      calls.push(body);
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  items: fragments.map((sourceText) => ({
+                    sourceText,
+                    needsPro: true,
+                    candidates: [],
+                  })),
+                }),
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    };
+    const headers = await createLicensedHeaders({ DEEPSEEK_API_KEY: 'test-key' }, deepseekFetch);
+
+    const result = await request('POST', '/api/assist-bet-parsing', {
+      headers,
+      body: {
+        sourceTexts: fragments,
+        modeTexts: {},
+      },
+    });
+
+    assert.equal(result.response.status, 200);
+    assert.equal(result.body.modelUsed, 'deepseek-v4-flash');
+    assert.deepEqual(calls.map((call) => call.model), ['deepseek-v4-flash']);
+    assert.equal(result.body.items.length, fragments.length);
+    assert.equal(result.body.items.every((item) => item.status === 'unresolved'), true);
+  });
+
   it('does not return trusted candidates when DeepSeek returns invalid JSON', async () => {
     const deepseekFetch = async () =>
       new Response(
@@ -485,7 +645,7 @@ describe('AI assisted bet parsing api', () => {
     });
 
     assert.equal(result.response.status, 200);
-    assert.match(prompt, /历史人工修正样本/);
+    assert.match(prompt, /历史人工校正样本/);
     assert.match(prompt, /虎免龙蛇复四三各五十/);
     assert.match(prompt, /虎兔龙蛇复四三各50/);
   });
@@ -531,10 +691,36 @@ describe('AI assisted bet parsing api', () => {
 
     assert.equal(result.response.status, 200);
     assert.match(prompt, /01\.02\.03\/100/);
-    assert.match(prompt, /无金额不猜测/);
+    assert.match(prompt, /缺少对应数值，不猜测/);
     assert.equal(result.body.items[0].status, 'needs_confirm');
     assert.equal(result.body.items[0].candidates[0].normalizedText, '01.02.03/100');
     assert.equal(result.body.items[0].candidates[0].betAmount, 300);
+  });
+
+  it('keeps the static DeepSeek prompt neutral while preserving the JSON contract', () => {
+    const prompt = buildPrompt([], {});
+    const blockedTerms = [
+      '六合彩',
+      '彩票',
+      '投注',
+      '下注',
+      '赌注',
+      '赌博',
+      '中奖',
+      '派奖',
+      '押',
+      '买',
+    ];
+
+    for (const term of blockedTerms) {
+      assert.equal(prompt.includes(term), false, `prompt should not include ${term}`);
+    }
+    assert.match(prompt, /JSON object/);
+    assert.match(prompt, /mode/);
+    assert.match(prompt, /normalizedText/);
+    assert.match(prompt, /pingma\|lianma\|numberFushi\|zodiacFushi/);
+    assert.match(prompt, /01\.02\.03\/100/);
+    assert.match(prompt, /不猜测/);
   });
 
   it('instructs AI to normalize confirmed spoken formats into locally parseable text', async () => {
@@ -604,5 +790,126 @@ describe('AI assisted bet parsing api', () => {
     assert.equal(result.body.items[0].candidates[0].betAmount, 60);
     assert.equal(result.body.items[1].status, 'needs_confirm');
     assert.equal(result.body.items[1].candidates[0].betAmount, 112);
+  });
+});
+
+describe('Qwen chat OCR api', () => {
+  beforeEach(async () => {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'mark-six-qwen-'));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { force: true, recursive: true });
+  });
+
+  async function createLicensedHeaders(env = {}, qwenFetch) {
+    app = createApp({
+      env: {
+        ADMIN_PASSWORD: 'admin-pass',
+        LICENSE_SECRET: 'license-secret',
+        LICENSE_DATA_FILE: path.join(tempDir, 'license-cards.json'),
+        LOTTERY_SYNC_DISABLED: '1',
+        ...env,
+      },
+      qwenFetch,
+    });
+
+    const login = await request('POST', '/api/admin/login', {
+      body: { password: 'admin-pass' },
+    });
+    const cookie = login.response.headers.get('set-cookie');
+    const generated = await request('POST', '/api/admin/cards/generate', {
+      headers: { cookie },
+      body: { count: 1, durationDays: 7 },
+    });
+    const activated = await request('POST', '/api/license/activate', {
+      body: { code: generated.body.plainCodes[0], browserId: 'browser-qwen' },
+    });
+
+    return {
+      'x-license-card-id': activated.body.card.id,
+      'x-license-browser-id': 'browser-qwen',
+    };
+  }
+
+  it('returns a clear error when Qwen OCR is not configured', async () => {
+    const headers = await createLicensedHeaders();
+
+    const result = await request('POST', '/api/recognize-chat-qwen', {
+      headers,
+      body: { imageBase64: 'abcd', mimeType: 'image/jpeg' },
+    });
+
+    assert.equal(result.response.status, 503);
+    assert.match(result.body.error, /QWEN_API_KEY/);
+  });
+
+  it('transcribes chat screenshots through Qwen vision OCR', async () => {
+    const calls = [];
+    const qwenFetch = async (url, options) => {
+      calls.push({ url, body: JSON.parse(options.body), headers: options.headers });
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: '137澳=02,05,08,11,14,17,20,23,26\n计300',
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    };
+    const headers = await createLicensedHeaders({ QWEN_API_KEY: 'test-qwen-key' }, qwenFetch);
+
+    const result = await request('POST', '/api/recognize-chat-qwen', {
+      headers,
+      body: { imageBase64: 'abcd', mimeType: 'image/jpeg' },
+    });
+
+    assert.equal(result.response.status, 200);
+    assert.equal(result.body.ok, true);
+    assert.equal(result.body.provider, 'qwen');
+    assert.equal(result.body.text, '137澳=02,05,08,11,14,17,20,23,26\n计300');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].body.model, 'qwen-vl-ocr-latest');
+    assert.equal(calls[0].body.messages[0].content[1].image_url.url, 'data:image/jpeg;base64,abcd');
+    assert.equal(calls[0].headers.Authorization, 'Bearer test-qwen-key');
+  });
+
+  it('strips Qwen chat UI noise and restores line breaks before frontend classification', async () => {
+    const rawText = '9:18 文件传输助手 4 21-47-32--13-42复式特碰每组 100 21..47+12..36/250...32....13..42,2 4.48.14..25..05..17..29..41..44/15 0 羊鸡猪牛复四三各五十平特羊又鸡 各一佰 澳门彩特码14号24号34号44号5 号15号25号35号一个号各下30 元4号45号一个号下10元 26买100 蛇一码10、兔一码5块';
+    const qwenFetch = async () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: rawText,
+              },
+            },
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    const headers = await createLicensedHeaders({ QWEN_API_KEY: 'test-qwen-key' }, qwenFetch);
+
+    const result = await request('POST', '/api/recognize-chat-qwen', {
+      headers,
+      body: { imageBase64: 'abcd', mimeType: 'image/jpeg' },
+    });
+
+    assert.equal(result.response.status, 200);
+    assert.equal(result.body.rawText, rawText);
+    assert.equal(result.body.text.includes('文件传输助手'), false);
+    assert.doesNotMatch(result.body.text, /9:18/);
+    assert.match(result.body.text, /21-47-32--13-42复式特碰每组100/);
+    assert.doesNotMatch(result.body.text, /每组10021/);
+    assert.match(result.body.text, /每组100\n21\.\.47/);
+    assert.match(result.body.text, /澳门彩特码14号24号34号44号5号15号25号35号一个号各下30元/);
+    assert.match(result.body.text, /蛇一码10/);
+    assert.match(result.body.text, /兔一码5块/);
+    assert.ok(result.body.text.split(/\r?\n/).length >= 6);
   });
 });
